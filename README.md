@@ -1,6 +1,6 @@
 # 🎮 Trinity Launcher
 
-> **Entorno gráfico para Minecraft Bedrock en Linux con soporte Flatpak**
+> **Entorno gráfico para Minecraft Bedrock en Linux**
 
 
 [![Language](https://img.shields.io/badge/license-BSD-blue.svg)](src/)
@@ -87,22 +87,10 @@ Trinity Launcher es un entorno gráfico para ejecutar y gestionar **Minecraft: B
 
 Ambas aplicaciones se compilan con el flujo estándar de **Qt + qmake**.
 
-### Compilar Trinchete
+### Compilar 
 
 ```bash
-qmake -project -o trinchete.pro
-echo "QT += widgets" >> trinchete.pro
-qmake trinchete.pro
-make
-```
-
-### Compilar Trinito
-
-```bash
-qmake -project -o trinito.pro
-echo "QT += widgets" >> trinito.pro
-qmake trinito.pro
-make
+sh build.sh
 ```
 
 ## Estructura esperada del proyecto
