@@ -30,5 +30,4 @@ jobs:
           name: trinity-launcher-binarios
           path: |
             build/app/trinity
-            build/app/discord_game_sdk.so
           if-no-files-found: warn   # No falla si solo existe uno de los binarios
