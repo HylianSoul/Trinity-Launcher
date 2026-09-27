@@ -17,7 +17,11 @@
 #
 # Env opcionales:
 #   MCPE_NX   URL/repo del engine (por defecto manifest publico, rama qt6)
-#   UPINFO    update-information para el hook self-updater
+#   CHANNEL   canal de release para el hook self-updater: latest|nightly
+#             (por defecto latest; el workflow anylinux lo fija a nightly
+#             en el cron diario)
+#   UPINFO    update-information explicito (por defecto
+#             gh-releases-zsync|owner|repo|CHANNEL|Trinity_Launcher-$ARCH.AppImage.zsync)
 #   OUTPATH   destino del AppImage (por defecto ./dist)
 
 set -eux
@@ -25,7 +29,16 @@ set -eux
 ARCH="$(uname -m)"
 ROOT="$PWD"
 OUTPATH="${OUTPATH:-$ROOT/dist}"
+CHANNEL="${CHANNEL:-latest}"
 OUTNAME="Trinity_Launcher-$ARCH.AppImage"
+# UPINFO por canal: latest y nightly actualizan cada uno su propio tag
+# (antes el nightly apuntaba a latest y se pisaban entre si).
+if [ -z "${UPINFO:-}" ]; then
+	# GITHUB_REPOSITORY lo pone el runner (owner/repo); fuera del CI cae
+	# al valor literal del repo publico.
+	REPO="${GITHUB_REPOSITORY:-Trinity-LA/Trinity-Launcher}"
+	UPINFO="gh-releases-zsync|${REPO%/*}|${REPO#*/}|$CHANNEL|$OUTNAME.zsync"
+fi
 SHARUN_URL="https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/quick-sharun.sh"
 DEBLOAT_URL="https://raw.githubusercontent.com/pkgforge-dev/Anylinux-AppImages/refs/heads/main/useful-tools/get-debloated-pkgs.sh"
 ZIG_VER="0.16.0"
@@ -41,6 +54,7 @@ $SUDO pacman -Syu --noconfirm \
 	base-devel git curl wget cmake clang ninja patchelf zsync \
 	xorg-server-xvfb pciutils hwdata dbus \
 	qt6-base qt6-declarative qt6-webengine qt6-svg qt6-tools qt6-translations \
+	gtk3 webkit2gtk-4.1 \
 	libzip libpng libpulse alsa-lib pipewire jack2 sndio \
 	libx11 libxi libxext libxfixes libxcursor libxrandr libxss libxtst \
 	libxcb libxkbcommon libxkbcommon-x11 xcb-util-wm \
@@ -51,7 +65,7 @@ $SUDO pacman -Syu --noconfirm \
 echo "=== 2/7 Paquetes debloated (mesa sin LLVM completo, icu/qt/gtk minis) ==="
 wget --retry-connrefused --tries=30 "$DEBLOAT_URL" -O ./get-debloated-pkgs.sh
 chmod +x ./get-debloated-pkgs.sh
-./get-debloated-pkgs.sh --add-common --prefer-nano
+./get-debloated-pkgs.sh --add-common --add-mesa --prefer-nano
 
 echo "=== 3/7 Fuentes del engine + datos ==="
 if [ ! -d mcpe-nx ]; then
@@ -106,6 +120,7 @@ cmake -S mcpe-nx -B mcpe-nx/build -G Ninja \
 	-DBUILD_WEBVIEW=OFF \
 	-DGAMEWINDOW_SYSTEM=SDL3 \
 	-DBUILD_UI=OFF \
+	-DXAL_WEBVIEW_USE_QT=ON \
 	-DENABLE_DEV_PATHS=OFF \
 	-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
 	-Wno-dev
@@ -118,6 +133,12 @@ if ! command -v zig >/dev/null 2>&1; then
 	export PATH="$ROOT/zig-$ARCH-linux-$ZIG_VER:$PATH"
 fi
 (cd tapk-extract && zig build --release=fast -Dtarget=native -Dcpu=baseline)
+# Backend de login Xbox (igual que el workflow nightly): el flujo MSA/OAuth
+# del engine lo sirve lite-webview. Sin esto el login no puede completarse.
+# Solo existe en el engine privado; si no esta, se omite sin romper nada.
+if [ -d mcpe-nx/lite-webview ]; then
+	(cd mcpe-nx/lite-webview && zig build --release=fast -Dtarget=native -Dcpu=baseline)
+fi
 
 if [ "$ARCH" != "x86_64" ]; then
 	# Sin flags x86 en ARM (igual que el workflow appimage-arm)
@@ -135,6 +156,10 @@ echo "=== 5/7 Instalar todo en /usr (requisito de quick-sharun) ==="
 $SUDO install -Dm755 build/app/trinity /usr/bin/trinity
 $SUDO install -Dm755 mcpe-nx/build/mcpelauncher-client/mcpelauncher-client /usr/bin/mcpelauncher-client
 $SUDO install -Dm755 tapk-extract/zig-out/bin/tapk-extract /usr/bin/mcpelauncher-extract
+# Backend de login Xbox (ver paso 4/7): solo si se pudo compilar.
+if [ -x mcpe-nx/lite-webview/zig-out/bin/lite-webview ]; then
+	$SUDO install -Dm755 mcpe-nx/lite-webview/zig-out/bin/lite-webview /usr/bin/mcpelauncher-webview
+fi
 for helper in msa-daemon mcpelauncher-error; do
 	found="$(find mcpe-nx/build -type f -name "$helper" -print | head -n 1)" || true
 	if [ -n "$found" ]; then
@@ -160,10 +185,26 @@ export ICON=/usr/share/icons/hicolor/scalable/apps/com.trench.trinity.launcher.s
 export DESKTOP=/usr/share/applications/com.trench.trinity.launcher.desktop
 export MAIN_BIN=trinity
 export OUTPATH OUTNAME
-export ADD_HOOKS="self-updater.hook:fix-namespaces.hook"
+export ADD_HOOKS="self-updater.hook:fix-namespaces.hook:host-libjack.hook"
 export DEPLOY_OPENGL=1 DEPLOY_VULKAN=1 DEPLOY_SDL=1
+# Descubrimiento dual ldd+strace: sin STRACE_MODE los modulos que Qt/SDL3
+# abren por dlopen (audio, plataformas) son invisibles y no entran al bundle.
+export STRACE_MODE=1
+# anylinux.so via LD_PRELOAD: purga LD_LIBRARY_PATH en hijos del host
+# (xdg-open/navegador del flujo login) y bloquea libnss_* del host para
+# que el DNS/TLS del login no muera por mezcla de glibc.
+export ANYLINUX_LIB=1
+# Integracion con el escritorio/Wayland: el compositor agrupa por app_id;
+# sin esto muestra un engranaje generico en vez del lanzador de Trinity.
+export GTK_CLASS_FIX=1
+export GTK_WINDOW_CLASS=com.trench.trinity.launcher
 
 BINS="/usr/bin/trinity /usr/bin/mcpelauncher-client /usr/bin/mcpelauncher-extract /usr/bin/lspci"
+# Backend de login Xbox: si existe, entra al deploy para que sharun arrastre
+# webkit2gtk y sus procesos auxiliares via ldd/strace.
+if [ -x /usr/bin/mcpelauncher-webview ]; then
+	BINS="$BINS /usr/bin/mcpelauncher-webview"
+fi
 for helper in msa-daemon mcpelauncher-error; do
 	if [ -x "/usr/bin/$helper" ]; then
 		BINS="$BINS /usr/bin/$helper"
@@ -181,9 +222,37 @@ if [ -f /usr/share/hwdata/pci.ids ]; then
 	mkdir -p AppDir/share/hwdata
 	cp -f /usr/share/hwdata/pci.ids AppDir/share/hwdata/
 fi
+# Procesos auxiliares de WebKitGTK (WebKitNetworkProcess, WebKitWebProcess):
+# son data/execs, no los arrastra ldd, igual que en el workflow nightly.
+if [ -d /usr/lib/webkit2gtk-4.1 ]; then
+	mkdir -p AppDir/lib
+	cp -r /usr/lib/webkit2gtk-4.1 AppDir/lib/
+fi
+# Audio (red de seguridad sobre STRACE_MODE=1: en CI headless no hay
+# servidor de sonido, asi que el trazado no ve los backends que SDL3 abre
+# por dlopen; se pre-siembran desde el mismo sistema de build, sin mezcla
+# exogena). host-libjack.hook (ADD_HOOKS) prioriza ademas el libjack nativo
+# del host en runtime para JACK/PipeWire.
+if [ -d /usr/share/alsa ]; then
+	mkdir -p AppDir/share
+	cp -r /usr/share/alsa AppDir/share/
+fi
+for audiolib in pipewire spa-0.2; do
+	if [ -d "/usr/lib/$audiolib" ]; then
+		mkdir -p AppDir/lib
+		cp -r "/usr/lib/$audiolib" AppDir/lib/
+	fi
+done
+if [ -d /usr/share/pipewire ]; then
+	mkdir -p AppDir/share
+	cp -r /usr/share/pipewire AppDir/share/
+fi
 # Vars de runtime que el AppRun/sharun expande al lanzar (sin expandir aqui)
 echo 'MCPELAUNCHER_DATA_DIR=${SHARUN_DIR}/share/mcpelauncher' >> AppDir/.env
 echo 'PCI_IDS=${SHARUN_DIR}/share/hwdata/pci.ids' >> AppDir/.env
+# Backend de login Xbox (igual que el AppRun del nightly).
+echo 'GDK_BACKEND=x11' >> AppDir/.env
+echo 'WEBKIT_EXEC_PATH=${SHARUN_DIR}/lib/webkit2gtk-4.1' >> AppDir/.env
 # Aislamiento anti-crash en distros con userland viejo (Void/musl, etc):
 # - fusion: el host puede traer QT_QPA_PLATFORMTHEME=gtk3 y el plugin
 #   libqgtk3 empaquetado contra un GTK3 ajeno al del host -> mezcla y SIGSEGV
@@ -221,7 +290,7 @@ EOF
 fi
 
 echo "=== 7/7 Empaquetar (DwarFS + uruntime) y test ==="
-export OUTPATH OUTNAME
+export OUTPATH OUTNAME UPINFO
 ./quick-sharun --make-appimage
 ./quick-sharun --test ./dist/*.AppImage
 

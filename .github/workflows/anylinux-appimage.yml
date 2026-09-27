@@ -2,10 +2,22 @@ name: AnyLinux AppImage (sharun, portable total)
 
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Canal de release'
+        required: true
+        default: 'latest'
+        type: choice
+        options:
+          - latest
+          - nightly
+  schedule:
+    # nightly diario -> canal nightly (igual que el antiguo nightly.yml)
+    - cron: '0 6 * * *'
 
 jobs:
   build:
-    name: "Trinity AnyLinux (${{ matrix.arch }})"
+    name: "Trinity AnyLinux (${{ matrix.arch }}, ${{ env.CHANNEL }})"
     runs-on: ${{ matrix.runs-on }}
     strategy:
       fail-fast: false
@@ -17,6 +29,9 @@ jobs:
             runs-on: ubuntu-24.04-arm
     # Regla anylinux: compilar SOLO en Arch Linux (Fedora/Ubuntu rompen el deploy)
     container: ghcr.io/pkgforge-dev/archlinux:latest
+    env:
+      # cron -> nightly; manual -> input (por defecto latest)
+      CHANNEL: ${{ github.event_name == 'schedule' && 'nightly' || github.event.inputs.channel || 'latest' }}
 
     steps:
       - name: Instalar dependencias base
@@ -30,7 +45,7 @@ jobs:
         run: |
           git clone ${{ secrets.MCPE_NX }} mcpe-nx > /dev/null 2>&1
 
-      - name: Construir AppImage AnyLinux
+      - name: Construir AppImage AnyLinux (${{ env.CHANNEL }})
         run: |
           sleep 10 # el runner a veces monta el checkout del commit anterior
           sh ./trinity-appimage.sh
@@ -38,7 +53,7 @@ jobs:
       - name: Subir artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: Trinity_Launcher-${{ matrix.arch }}-anylinux
+          name: Trinity_Launcher-${{ matrix.arch }}-anylinux-${{ env.CHANNEL }}
           path: dist
 
   release:
@@ -46,16 +61,18 @@ jobs:
     needs: [build]
     permissions: write-all
     runs-on: ubuntu-latest
+    env:
+      CHANNEL: ${{ github.event_name == 'schedule' && 'nightly' || github.event.inputs.channel || 'latest' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: Trinity_Launcher-*-anylinux
+          pattern: Trinity_Launcher-*-anylinux-${{ env.CHANNEL }}
           merge-multiple: true
 
-      - name: Subir a Release (latest)
+      - name: Subir a Release (${{ env.CHANNEL }})
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest
+          tag_name: ${{ env.CHANNEL }}
           files: |
             Trinity_Launcher-*.AppImage
             *.zsync
