@@ -186,7 +186,7 @@ export DESKTOP=/usr/share/applications/com.trench.trinity.launcher.desktop
 export MAIN_BIN=trinity
 export OUTPATH OUTNAME
 export ADD_HOOKS="self-updater.hook:fix-namespaces.hook:host-libjack.hook"
-export DEPLOY_OPENGL=1 DEPLOY_VULKAN=1 DEPLOY_SDL=1
+export DEPLOY_OPENGL=1 DEPLOY_VULKAN=1 DEPLOY_SDL=1 DEPLOY_PIPEWIRE=1 DEPLOY_PULSE=1
 # Descubrimiento dual ldd+strace: sin STRACE_MODE los modulos que Qt/SDL3
 # abren por dlopen (audio, plataformas) son invisibles y no entran al bundle.
 export STRACE_MODE=1
@@ -228,21 +228,16 @@ if [ -d /usr/lib/webkit2gtk-4.1 ]; then
 	mkdir -p AppDir/lib
 	cp -r /usr/lib/webkit2gtk-4.1 AppDir/lib/
 fi
-# Audio (red de seguridad sobre STRACE_MODE=1: en CI headless no hay
-# servidor de sonido, asi que el trazado no ve los backends que SDL3 abre
-# por dlopen; se pre-siembran desde el mismo sistema de build, sin mezcla
-# exogena). host-libjack.hook (ADD_HOOKS) prioriza ademas el libjack nativo
-# del host en runtime para JACK/PipeWire.
+# Audio (red de seguridad sobre el deploy + STRACE_MODE=1: en CI headless
+# no hay servidor de sonido, asi que el trazado no ve los backends que SDL3
+# abre por dlopen; los datos se pre-siembran desde el mismo sistema de
+# build. Las .so las despliega quick-sharun via DEPLOY_PIPEWIRE/PULSE,
+# nunca a mano). host-libjack.hook (ADD_HOOKS) prioriza ademas el libjack
+# nativo del host en runtime para JACK/PipeWire.
 if [ -d /usr/share/alsa ]; then
 	mkdir -p AppDir/share
 	cp -r /usr/share/alsa AppDir/share/
 fi
-for audiolib in pipewire spa-0.2; do
-	if [ -d "/usr/lib/$audiolib" ]; then
-		mkdir -p AppDir/lib
-		cp -r "/usr/lib/$audiolib" AppDir/lib/
-	fi
-done
 if [ -d /usr/share/pipewire ]; then
 	mkdir -p AppDir/share
 	cp -r /usr/share/pipewire AppDir/share/
@@ -292,10 +287,11 @@ fi
 echo "=== 7/7 Empaquetar (DwarFS + uruntime) y test ==="
 export OUTPATH OUTNAME UPINFO
 ./quick-sharun --make-appimage
-# En CI/contenedores no hay FUSE ni user-namespaces, asi que uruntime no
-# puede montar: nivel 3 (extraccion a $TMPDIR) + X virtual para que la GUI
-# Qt arranque de verdad y el test valide el bundle.
+# Test: --simple-test en vez de --test. El full exige 12 s de GUI en idle
+# y en CI headless la app sale (codigo 0) justo tras arrancar; el simple
+# falla solo ante lo que indica un deploy roto (symbol lookup error o
+# shared libraries faltantes). Es el fallback previsto por quick-sharun.
 export APPIMAGE_EXTRACT_AND_RUN=1
-xvfb-run -a ./quick-sharun --test ./dist/*.AppImage
+xvfb-run -a ./quick-sharun --simple-test ./dist/*.AppImage
 
 echo "Listo: $OUTPATH/$OUTNAME"
