@@ -292,6 +292,10 @@ fi
 echo "=== 7/7 Empaquetar (DwarFS + uruntime) y test ==="
 export OUTPATH OUTNAME UPINFO
 ./quick-sharun --make-appimage
-./quick-sharun --test ./dist/*.AppImage
+# En CI/contenedores no hay FUSE ni user-namespaces, asi que uruntime no
+# puede montar: nivel 3 (extraccion a $TMPDIR) + X virtual para que la GUI
+# Qt arranque de verdad y el test valide el bundle.
+export APPIMAGE_EXTRACT_AND_RUN=1
+xvfb-run -a ./quick-sharun --test ./dist/*.AppImage
 
 echo "Listo: $OUTPATH/$OUTNAME"
