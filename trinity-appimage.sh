@@ -215,32 +215,31 @@ done
 
 echo "=== 6b/7 Datos extra + sidecar 32-bit (x86_64) ==="
 # linux-bin: datos del engine, no son ELF asi que van directo a share/
+# (cp -n: jamas sobrescribir lo que quick-sharun ya desplego; ver 6c/7).
 mkdir -p AppDir/share/mcpelauncher
-cp -r /usr/share/mcpelauncher/. AppDir/share/mcpelauncher/
+cp -rn /usr/share/mcpelauncher/. AppDir/share/mcpelauncher/
 # pci.ids para lspci (deteccion de GPU del gestor de contenido)
 if [ -f /usr/share/hwdata/pci.ids ]; then
 	mkdir -p AppDir/share/hwdata
-	cp -f /usr/share/hwdata/pci.ids AppDir/share/hwdata/
+	cp -n /usr/share/hwdata/pci.ids AppDir/share/hwdata/ 2>/dev/null || true
 fi
-# Procesos auxiliares de WebKitGTK (WebKitNetworkProcess, WebKitWebProcess):
-# son data/execs, no los arrastra ldd, igual que en el workflow nightly.
-if [ -d /usr/lib/webkit2gtk-4.1 ]; then
-	mkdir -p AppDir/lib
-	cp -r /usr/lib/webkit2gtk-4.1 AppDir/lib/
-fi
-# Audio (red de seguridad sobre el deploy + STRACE_MODE=1: en CI headless
-# no hay servidor de sonido, asi que el trazado no ve los backends que SDL3
-# abre por dlopen; los datos se pre-siembran desde el mismo sistema de
-# build. Las .so las despliega quick-sharun via DEPLOY_PIPEWIRE/PULSE,
-# nunca a mano). host-libjack.hook (ADD_HOOKS) prioriza ademas el libjack
-# nativo del host en runtime para JACK/PipeWire.
+# PROHIBIDO copiar /usr/lib/webkit2gtk-4.1 a mano: quick-sharun ya lo
+# despliega solo (DEPLOY_WEBKIT2GTK via mcpelauncher-webview). Un `cp -r`
+# aqui FUSIONA con el dir existente y sobrescribe sus binarios, que son
+# hardlinks al inodo de sharun: O_TRUNC reemplaza el loader (y TODOS los
+# bin/*) con bytes de jsc y Trinity jamas arranca (paso en 2026-09, el
+# test no lo detecto porque jsc sale 0 en silencio). Solo se exporta la
+# ruta para el runtime (ver WEBKIT_EXEC_PATH abajo).
+# Audio: solo DATA (conf de alsa/pipewire). Las .so las despliega
+# quick-sharun via DEPLOY_PIPEWIRE/PULSE, nunca a mano (misma trampa).
+# cp -rn: si quick-sharun ya puso algo, no tocarlo jamas.
 if [ -d /usr/share/alsa ]; then
 	mkdir -p AppDir/share
-	cp -r /usr/share/alsa AppDir/share/
+	cp -rn /usr/share/alsa AppDir/share/ 2>/dev/null || true
 fi
 if [ -d /usr/share/pipewire ]; then
 	mkdir -p AppDir/share
-	cp -r /usr/share/pipewire AppDir/share/
+	cp -rn /usr/share/pipewire AppDir/share/ 2>/dev/null || true
 fi
 # Vars de runtime que el AppRun/sharun expande al lanzar (sin expandir aqui)
 echo 'MCPELAUNCHER_DATA_DIR=${SHARUN_DIR}/share/mcpelauncher' >> AppDir/.env
@@ -266,8 +265,11 @@ if [ "$ARCH" = "x86_64" ] && [ -f 32bitmcpe/bin/mcpelauncher-client86 ]; then
 	cp -f 32bitmcpe/bin/mcpelauncher-client86 AppDir/bin/.mcpelauncher-client86.real
 	chmod +x AppDir/bin/.mcpelauncher-client86.real
 	cp -f 32bitmcpe/lib32/*.so* AppDir/lib32/ 2>/dev/null || true
-	if [ -f 32bitmcpe/lib32/ld-linux.so.2 ]; then
-		cp -f 32bitmcpe/lib32/ld-linux.so.2 AppDir/lib32/
+	# Loader de 32-bit: buscar en todo el bundle (no solo lib32/), luego
+	# en el sistema. Sin esto el sidecar apunta a un loader inexistente.
+	LD32="$(find 32bitmcpe -name 'ld-linux.so*' -type f -print 2>/dev/null | head -n 1)"
+	if [ -n "$LD32" ]; then
+		cp -f "$LD32" AppDir/lib32/ld-linux.so.2
 	elif [ -f /usr/lib32/ld-linux.so.2 ]; then
 		cp -f /usr/lib32/ld-linux.so.2 AppDir/lib32/
 	fi
@@ -276,13 +278,40 @@ if [ "$ARCH" = "x86_64" ] && [ -f 32bitmcpe/bin/mcpelauncher-client86 ]; then
 	rm -f AppDir/lib32/libGLdispatch.so* AppDir/lib32/libX*.so* AppDir/lib32/libxcb*.so*
 	cat > AppDir/bin/mcpelauncher-client86 <<'EOF'
 #!/bin/sh
-# Sidecar 32-bit: loader propio, sin tocar el entorno del proceso padre.
+# Sidecar 32-bit: loader propio si viaja en el bundle, si no el del host,
+# en ambos casos con --library-path al lib32 empaquetado y sin tocar el
+# entorno del proceso padre.
 HERE="$(dirname "$(readlink -f "$0")")/.."
 HERE="$(readlink -f "$HERE")"
-exec "$HERE"/lib32/ld-linux.so.2 --library-path "$HERE"/lib32 "$HERE"/bin/.mcpelauncher-client86.real "$@"
+if [ -f "$HERE"/lib32/ld-linux.so.2 ]; then
+    LOADER="$HERE"/lib32/ld-linux.so.2
+elif [ -f /lib/ld-linux.so.2 ]; then
+    LOADER=/lib/ld-linux.so.2
+else
+    echo "mcpelauncher-client86: sin loader de 32-bit" >&2
+    exit 1
+fi
+exec "$LOADER" --library-path "$HERE"/lib32 "$HERE"/bin/.mcpelauncher-client86.real "$@"
 EOF
 	chmod +x AppDir/bin/mcpelauncher-client86
 fi
+
+echo "=== 6c/7 Verificar integridad del loader sharun ==="
+# Puerta anti-corrupcion: AppDir/bin/* son hardlinks al inodo de
+# AppDir/sharun. Sobrescribir CUALQUIER binario hardlinkeado (p.ej. `cp -r`
+# sobre un dir ya desplegado fusiona y hace O_TRUNC sobre el inodo)
+# reemplaza el loader y MATA el AppImage sin que el test lo note (el
+# invasor suele salir 0 en silencio). Se compara contra el tarball pineado
+# ANTES de empaquetar: fail rapido y ruidoso en vez de release roto.
+_QS_TMPDIR="${TMPDIR:-/tmp}"
+_QS_REFDIR="$(mktemp -d)"
+tar -xf "$_QS_TMPDIR/sharun+helper-libs-$ARCH.tar" -C "$_QS_REFDIR" sharun
+if ! cmp -s "$_QS_REFDIR/sharun" AppDir/sharun; then
+	echo "FATAL: AppDir/sharun difiere del loader original (¿sobrescritura via hardlink?)" >&2
+	exit 1
+fi
+rm -rf "$_QS_REFDIR"
+echo "sharun integro."
 
 echo "=== 7/7 Empaquetar (DwarFS + uruntime) y test ==="
 export OUTPATH OUTNAME UPINFO
