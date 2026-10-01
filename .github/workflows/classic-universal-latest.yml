@@ -354,7 +354,9 @@ jobs:
           import json, os, sys
           for fn in os.listdir(sys.argv[1]):
               p = os.path.join(sys.argv[1], fn)
+              if not fn.endswith('.json'): continue
               with open(p) as f: d = json.load(f)
+              if 'library_path' not in d: continue
               d['library_path'] = os.path.basename(d['library_path'])
               with open(p, 'w') as f: json.dump(d, f, indent=4)
           print('vendors:', os.listdir(sys.argv[1]))
