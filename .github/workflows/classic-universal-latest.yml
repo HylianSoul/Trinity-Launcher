@@ -171,6 +171,13 @@ jobs:
           export GIO_MODULE_DIR="$LIB/gio/modules"
           export GIO_USE_VFS=local
           export GCONV_PATH="$LIB/gconv"
+          # dlopen() NO usa --library-path: sin LD_LIBRARY_PATH todo lo que
+          # SDL/EGL abre en runtime (EGL, GLES, backends de audio) caeria al
+          # host (caso "Could not get EGL display" en Arch).
+          export LD_LIBRARY_PATH="$LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # Vendedores EGL empaquetados (ver paso GLVND): sin esto glvnd lee
+          # los .json del host y carga su Mesa contra glibc 2.39.
+          export __EGL_VENDOR_LIBRARY_DIRS="$HERE/usr/share/glvnd/egl_vendor.d"
           exec "$LIB/ld-linux-x86-64.so.2" --library-path "$LIB" "$HERE/usr/bin/trinity" "$@"
           EOF
           chmod +x APPIMAGE-TRINITY/AppRun
@@ -326,6 +333,32 @@ jobs:
               echo "wrapped: $f"
             done
           done
+
+      - name: Proveedores EGL de Mesa (GLVND)
+        run: |
+          # glvnd (libEGL/libGLX/libGLESv2 del bundle) elige vendedor por
+          # .json; los del host apuntan a su Mesa (mismatch con glibc 2.39).
+          # Se empaquetan los de Mesa con library_path pelado (=basename) y
+          # con LD_LIBRARY_PATH del AppRun resuelven al bundle en cual host.
+          DST=APPIMAGE-TRINITY/usr/lib
+          VDIR=APPIMAGE-TRINITY/usr/share/glvnd/egl_vendor.d
+          mkdir -p "$VDIR"
+          for l in libEGL_mesa.so.0 libGLX_mesa.so.0 libGLESv2.so.2 libGLESv1_CM.so.1; do
+            src="$(find /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "$l" 2>/dev/null | head -n 1)"
+            [ -n "$src" ] || { echo "AVISO: $l no esta en el runner" >&2; continue; }
+            cp -afL "$src" "$DST/" || { echo "FATAL: $src" >&2; exit 1; }
+          done
+          cp /usr/share/glvnd/egl_vendor.d/*.json "$VDIR/" 2>/dev/null || \
+            { echo "FATAL: sin egl_vendor.d en el runner" >&2; exit 1; }
+          python3 - "$VDIR" <<'PY'
+          import json, os, sys
+          for fn in os.listdir(sys.argv[1]):
+              p = os.path.join(sys.argv[1], fn)
+              with open(p) as f: d = json.load(f)
+              d['library_path'] = os.path.basename(d['library_path'])
+              with open(p, 'w') as f: json.dump(d, f, indent=4)
+          print('vendors:', os.listdir(sys.argv[1]))
+          PY
 
       - name: Dieta pre-compresion (maximo SquashFS)
         run: |
