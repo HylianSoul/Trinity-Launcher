@@ -373,7 +373,9 @@ jobs:
           for f in $(find APPIMAGE-TRINITY/usr/bin APPIMAGE-TRINITY/usr/lib \
                           APPIMAGE-TRINITY/usr/libexec APPIMAGE-TRINITY/usr/plugins \
                           -type f 2>/dev/null); do
-            file -b "$f" | grep -q 'ELF' || continue
+            # Solo dinamicos: los estaticos (zig) no tienen .dynamic y
+            # patchelf muere con ellos.
+            file -b "$f" | grep -q 'dynamically linked' || continue
             case "$f" in *lib32*|*client86*|*ld-linux*) continue;; esac
             patchelf --set-rpath '$ORIGIN:$ORIGIN/..:$ORIGIN/../lib' --force-rpath "$f" \
               || { echo "FATAL: patchelf $f" >&2; exit 1; }
