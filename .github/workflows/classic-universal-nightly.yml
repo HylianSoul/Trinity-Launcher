@@ -50,7 +50,7 @@ jobs:
             libgles2-mesa-dev libvulkan-dev vulkan-validationlayers libdrm-dev libgbm-dev \
             libudev-dev libevdev-dev libusb-1.0-0-dev libdbus-1-dev libbluetooth-dev bluez \
             libibus-1.0-dev libxkbcommon-dev libpng-dev libzip-dev libcups2-dev \
-            libwayland-dev libunwind-dev libdecor-0-dev libfuse2 wget file python3 zsync \
+            libwayland-dev libunwind-dev libdecor-0-dev libfuse2 wget file python3 zsync patchelf \
             pciutils pci.ids libgtk-3-dev libwebkit2gtk-4.1-dev
 
       - name: Compilar mcpe-nx
@@ -173,10 +173,10 @@ jobs:
           export GIO_MODULE_DIR="$LIB/gio/modules"
           export GIO_USE_VFS=local
           export GCONV_PATH="$LIB/gconv"
-          # dlopen() NO usa --library-path: sin LD_LIBRARY_PATH todo lo que
-          # SDL/EGL abre en runtime (EGL, GLES, backends de audio) caeria al
-          # host (caso "Could not get EGL display" en Arch).
-          export LD_LIBRARY_PATH="$LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          # SIN LD_LIBRARY_PATH a proposito: los wrappers son scripts y el
+          # kernel los abre con /bin/sh del host; con esa var heredada el sh
+          # cargaria la libc del bundle y moriria (caso libncursesw). El
+          # dlopen resuelve al bundle por el RPATH $ORIGIN (ver paso RPATH).
           # Vendedores EGL empaquetados (ver paso GLVND): sin esto glvnd lee
           # los .json del host y carga su Mesa contra glibc 2.39.
           export __EGL_VENDOR_LIBRARY_DIRS="$HERE/usr/share/glvnd/egl_vendor.d"
@@ -363,6 +363,22 @@ jobs:
               with open(p, 'w') as f: json.dump(d, f, indent=4)
           print('vendors:', os.listdir(sys.argv[1]))
           PY
+
+      - name: RPATH $ORIGIN en todo ELF (dlopen sin env)
+        run: |
+          # El dlopen (SDL, EGL, plugins) ignora --library-path: con RPATH
+          # relativo cada objeto encuentra al bundle sin LD_LIBRARY_PATH,
+          # asi los hijos del host (/bin/sh de los wrappers, xdg-open...)
+          # nacen con entorno limpio. RPATH (no RUNPATH) propaga a hijos.
+          for f in $(find APPIMAGE-TRINITY/usr/bin APPIMAGE-TRINITY/usr/lib \
+                          APPIMAGE-TRINITY/usr/libexec APPIMAGE-TRINITY/usr/plugins \
+                          -type f 2>/dev/null); do
+            file -b "$f" | grep -q 'ELF' || continue
+            case "$f" in *lib32*|*client86*|*ld-linux*) continue;; esac
+            patchelf --set-rpath '$ORIGIN:$ORIGIN/..:$ORIGIN/../lib' --force-rpath "$f" \
+              || { echo "FATAL: patchelf $f" >&2; exit 1; }
+          done
+          echo "RPATH aplicado."
 
       - name: Dieta pre-compresion (maximo SquashFS)
         run: |
