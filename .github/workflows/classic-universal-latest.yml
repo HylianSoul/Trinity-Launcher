@@ -1,408 +1,76 @@
 name: Classic Universal latest (catalogo + musl/glibc)
 
-# Edicion para el catalogo appimage.github.io SIN tocar la AnyLinux:
-#  - Misma base probada que classic-nightly (noble, linuxdeploy, SquashFS
-#    tipo 2: el test oficial no monta DwarFS) + glibc/ld-linux propios y
-#    helpers envueltos -> corre en glibc vieja/nueva y en musl.
-#  - Se compila en noble a proposito (jammy trae Qt 6.2 y el proyecto exige
-#    Qt >= 6.3: qt_standard_project_setup). La compat con sistemas viejos
-#    la da la glibc bundelada (2.39, kernel >= 3.2), no el host de build.
-#  - Maxima compresion SquashFS (xz de appimagetool) + dieta strip/doc/man.
+# Edicion para el catalogo appimage.github.io. NO es un empaquetado nuevo:
+# es EXACTAMENTE el pipeline AnyLinux (quick-sharun + sharun + glibc propia,
+# ya probado en Arch) con PACKAGER=squashfs, que envuelve el mismo AppDir
+# con el appimagetool clasico -> SquashFS tipo 2, el unico formato que monta
+# el test del catalogo (error-not-squashfs con DwarFS).
+#
+# Reglas del catalogo que cumple: una sola x86_64 por tag, nombre sin
+# version/nightly/debug, update-info + .zsync, icono, .DirIcon,
+# desktop-file-validate, metainfo AppStream, X11 forzado, y el mismo
+# ANYLINUX_LIB=0 que hace funcionar login/audio/multijugador.
 
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Canal de release'
+        required: true
+        default: 'latest'
+        type: choice
+        options:
+          - latest
+          - nightly
+  schedule:
+    - cron: '0 7 * * *'
 
 jobs:
-  build-and-package:
-    permissions: write-all
-    runs-on: ubuntu-latest
+  build:
+    # El catalogo solo prueba x86_64 (aarch64 queda fuera por regla).
+    runs-on: ubuntu-24.04
+    container: ghcr.io/pkgforge-dev/archlinux:latest
+    env:
+      PACKAGER: squashfs
+      CHANNEL: ${{ github.event_name == 'schedule' && 'nightly' || github.event.inputs.channel || 'latest' }}
 
     steps:
-      - name: Clonar repositorio Trinity
-        uses: actions/checkout@v4
-        with:
-          path: 'trinity'
+      - name: Instalar dependencias base
+        run: pacman -Sy --noconfirm git
+
+      - uses: actions/checkout@v4
 
       - name: Clonar mcpe-nx
-        run: |
-          git clone ${{ secrets.MCPE_NX }} mcpe-nx > /dev/null 2>&1
+        run: git clone ${{ secrets.MCPE_NX }} mcpe-nx > /dev/null 2>&1
 
-      - name: Clonar tapk-extract
-        run: git clone https://gitlab.com/javiercplus/tapk-extract.git
+      - name: Construir AppImage classic-universal
+        env:
+          UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|${{ github.event_name == 'schedule' && 'nightly-classic' || github.event.inputs.channel }}-classic|Trinity_Launcher-x86_64-classic.AppImage.zsync
+        run: sh ./trinity-appimage.sh
 
-      - name: Clonar mcpelauncher-linux-bin
-        uses: actions/checkout@v4
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
         with:
-          repository: 'minecraft-linux/mcpelauncher-linux-bin'
-          path: 'linux-bin'
+          name: Trinity_Launcher-x86_64-classic-${{ env.CHANNEL }}
+          path: dist
 
-      - name: Instalar dependencias del sistema
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates build-essential git curl cmake clang ninja-build \
-            qt6-base-dev qt6-base-dev-tools qt6-declarative-dev qt6-webengine-dev qt6-svg-dev qt6-tools-dev \
-            libcurl4-openssl-dev libssl-dev libasound2-dev libpulse-dev libjack-jackd2-dev \
-            libpipewire-0.3-dev libsndio-dev libx11-dev libxi-dev libxext-dev libxfixes-dev \
-            libxcursor-dev libxrandr-dev libxss-dev libxtst-dev libgl1-mesa-dev libegl1-mesa-dev \
-            libgles2-mesa-dev libvulkan-dev vulkan-validationlayers libdrm-dev libgbm-dev \
-            libudev-dev libevdev-dev libusb-1.0-0-dev libdbus-1-dev libbluetooth-dev bluez \
-            libibus-1.0-dev libxkbcommon-dev libpng-dev libzip-dev libcups2-dev \
-            libwayland-dev libunwind-dev libdecor-0-dev libfuse2 wget file python3 zsync patchelf \
-            pciutils pci.ids libgtk-3-dev libwebkit2gtk-4.1-dev
+  release:
+    if: ${{ needs.build.result == 'success' }}
+    needs: [build]
+    permissions: write-all
+    runs-on: ubuntu-latest
+    env:
+      CHANNEL: ${{ github.event_name == 'schedule' && 'nightly' || github.event.inputs.channel || 'latest' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Trinity_Launcher-x86_64-classic-${{ env.CHANNEL }}
+          merge-multiple: true
 
-      - name: Compilar mcpe-nx
-        run: |
-          export CC=clang
-          export CXX=clang++
-          cd mcpe-nx
-          mkdir -p build && cd build
-          cmake .. \
-            -DCMAKE_BUILD_TYPE=Release \
-            -G Ninja \
-            -DBUILD_WEBVIEW=OFF \
-            -DGAMEWINDOW_SYSTEM=SDL3 \
-            -DXAL_WEBVIEW_USE_QT=ON \
-            -DBUILD_UI=OFF \
-            -Wno-dev
-          ninja -v
-
-      - name: Compilar proyectos en Zig (tapk-extract y lite-webview)
-        run: |
-          wget -q https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-          tar -xf zig-x86_64-linux-0.16.0.tar.xz
-          export PATH="$PWD/zig-x86_64-linux-0.16.0:$PATH"
-          
-          # tapk-extract: Compilación nativa con CPU base
-          cd tapk-extract
-          zig build --release=fast -Dtarget=native -Dcpu=baseline
-          cd ..
-          
-          # lite-webview: Compilación nativa con CPU base
-          cd mcpe-nx/lite-webview
-          zig build --release=fast -Dtarget=native -Dcpu=baseline
-          cd ../..
-
-      - name: Compilar Trinity Launcher
-        run: |
-          cd trinity
-          chmod +x build.sh
-          ./build.sh --deps
-          ./build.sh --release
-
-      - name: Preparar estructura AppDir
-        run: |
-          mkdir -p APPIMAGE-TRINITY/usr/bin
-          mkdir -p APPIMAGE-TRINITY/usr/lib
-          mkdir -p APPIMAGE-TRINITY/usr/lib32
-          mkdir -p APPIMAGE-TRINITY/usr/share/applications
-          mkdir -p APPIMAGE-TRINITY/usr/share/icons/hicolor/scalable/apps
-          mkdir -p APPIMAGE-TRINITY/usr/share/metainfo
-          mkdir -p APPIMAGE-TRINITY/usr/share/mcpelauncher
-          
-          wget https://huggingface.co/datasets/ccoffee20/PEPE/resolve/main/mcpe32bit.tar
-          tar -xf mcpe32bit.tar
-          
-          cp mcpe-nx/build/mcpelauncher-client/mcpelauncher-client APPIMAGE-TRINITY/usr/bin/
-          # WebKitGTK necesita sus procesos auxiliares (WebKitNetworkProcess, WebKitWebProcess, etc.)
-          cp -r /usr/lib/x86_64-linux-gnu/webkit2gtk-4.1 APPIMAGE-TRINITY/usr/lib/
-
-          cp tapk-extract/zig-out/bin/tapk-extract APPIMAGE-TRINITY/usr/bin/mcpelauncher-extract
-          chmod +x APPIMAGE-TRINITY/usr/bin/mcpelauncher-extract
-          
-          cp mcpe-nx/lite-webview/zig-out/bin/lite-webview APPIMAGE-TRINITY/usr/bin/mcpelauncher-webview
-          chmod +x APPIMAGE-TRINITY/usr/bin/mcpelauncher-webview
-          
-          cp trinity/build/app/trinity APPIMAGE-TRINITY/usr/bin/
-          
-          find mcpe-nx/build -type f -name "msa-daemon" -exec cp {} APPIMAGE-TRINITY/usr/bin/ \;
-          find mcpe-nx/build -type f -name "mcpelauncher-error" -exec cp {} APPIMAGE-TRINITY/usr/bin/ \;
-
-          cp trinity/resources/shortcuts/com.trench.trinity.launcher.desktop APPIMAGE-TRINITY/usr/share/applications/
-          cp trinity/resources/branding/com.trench.trinity.launcher.svg APPIMAGE-TRINITY/usr/share/icons/hicolor/scalable/apps/
-          
-          cp -r linux-bin/* APPIMAGE-TRINITY/usr/share/mcpelauncher/
-          
-      - name: Integrar Librería libzip (Portabilidad Total)
-        run: |
-          LIBZIP_REAL=$(find /usr/lib/x86_64-linux-gnu -name "libzip.so*" -type f | head -n 1)
-          cp -v "$LIBZIP_REAL" APPIMAGE-TRINITY/usr/lib/libzip.so.5
-          chmod +w APPIMAGE-TRINITY/usr/lib/libzip.so.5
-
-      - name: Integrar lspci (detección de GPU)
-        run: |
-          mkdir -p APPIMAGE-TRINITY/usr/share/hwdata
-          cp -v /usr/bin/lspci APPIMAGE-TRINITY/usr/bin/
-          cp -v /usr/bin/setpci APPIMAGE-TRINITY/usr/bin/ 2>/dev/null || true
-          find /usr/lib/x86_64-linux-gnu -name "libpci.so*" -exec cp -v -P {} APPIMAGE-TRINITY/usr/lib/ \; 2>/dev/null || true
-          cp -v /usr/lib/x86_64-linux-gnu/libzstd.so.* APPIMAGE-TRINITY/usr/lib/ 2>/dev/null || true
-          cp -v /usr/lib/x86_64-linux-gnu/libz.so.* APPIMAGE-TRINITY/usr/lib/ 2>/dev/null || true
-          cp -v /usr/share/misc/pci.ids APPIMAGE-TRINITY/usr/share/hwdata/ 2>/dev/null || true
-
-      - name: Crear script AppRun universal y enlaces en raíz
-        run: |
-          cat << 'EOF' > APPIMAGE-TRINITY/AppRun
-          #!/bin/sh
-          # Trinity classic-universal: SquashFS (catalogo) + glibc propia (musl/glibc).
-          HERE="$(dirname "$(readlink -f "$0")")"
-          LIB="$HERE/usr/lib"
-          export PATH="$HERE/usr/bin:$PATH"
-          export QT_QPA_PLATFORM="xcb"
-          export GDK_BACKEND="x11"
-          export DISABLE_WAYLAND=1
-          export QT_QPA_PLATFORMTHEME=fusion
-          # applicationDirPath apunta al loader bajo ld-linux directo: rutas
-          # Qt absolutas en vez de confiar en qt.conf relativo.
-          export QT_PLUGIN_PATH="$HERE/usr/plugins"
-          export QML2_IMPORT_PATH="$HERE/usr/qml"
-          export QML_IMPORT_PATH="$HERE/usr/qml"
-          export WEBKIT_EXEC_PATH="$LIB/webkit2gtk-4.1"
-          # Drivers DRI empaquetados (ver paso de cierre): sin esto libGL
-          # los buscaria en la ruta compilada del host.
-          export LIBGL_DRIVERS_PATH="$LIB/dri"
-          # Sin bwrap empaquetado WebKit cae a modo sin sandbox (igual que la
-          # nightly original que funciona); con sandbox muere en kernels sin
-          # userns y bajo firejail del test oficial.
-          export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
-          # QtWebEngine bajo firejail del test oficial (sin userns).
-          export QTWEBENGINE_DISABLE_SANDBOX=1
-          export MCPELAUNCHER_DATA_DIR="$HERE/usr/share/mcpelauncher"
-          export PCI_IDS="$HERE/usr/share/hwdata/pci.ids"
-          export GIO_MODULE_DIR="$LIB/gio/modules"
-          export GIO_USE_VFS=local
-          export GCONV_PATH="$LIB/gconv"
-          # SIN LD_LIBRARY_PATH a proposito: los wrappers son scripts y el
-          # kernel los abre con /bin/sh del host; con esa var heredada el sh
-          # cargaria la libc del bundle y moriria (caso libncursesw). El
-          # dlopen resuelve al bundle por el RPATH $ORIGIN (ver paso RPATH).
-          # Vendedores EGL empaquetados (ver paso GLVND): sin esto glvnd lee
-          # los .json del host y carga su Mesa contra glibc 2.39.
-          export __EGL_VENDOR_LIBRARY_DIRS="$HERE/usr/share/glvnd/egl_vendor.d"
-          exec "$LIB/ld-linux-x86-64.so.2" --library-path "$LIB" "$HERE/usr/bin/trinity" "$@"
-          EOF
-          chmod +x APPIMAGE-TRINITY/AppRun
-          
-          ln -s usr/share/applications/com.trench.trinity.launcher.desktop APPIMAGE-TRINITY/com.trench.trinity.launcher.desktop
-          ln -s usr/share/icons/hicolor/scalable/apps/com.trench.trinity.launcher.svg APPIMAGE-TRINITY/com.trench.trinity.launcher.svg
-          # appdir-lint.sh lo exige (FATAL si falta).
-          ln -s usr/share/icons/hicolor/scalable/apps/com.trench.trinity.launcher.svg APPIMAGE-TRINITY/.DirIcon
-
-          # Comment/StartupWMClass: solo la copia del AppDir (el repo no se toca).
-          D=APPIMAGE-TRINITY/usr/share/applications/com.trench.trinity.launcher.desktop
-          grep -q '^Comment=' "$D" || echo 'Comment=Minecraft Bedrock launcher for Linux' >> "$D"
-          grep -q '^StartupWMClass=' "$D" || echo 'StartupWMClass=com.trench.trinity.launcher' >> "$D"
-          command -v desktop-file-validate >/dev/null \
-            && desktop-file-validate "$D" \
-            || echo "desktop-file-validate ausente, omitido"
-
-          # Metainfo AppStream: quita el warning y alimenta la ficha/screenshots.
-          cat > APPIMAGE-TRINITY/usr/share/metainfo/com.trench.trinity.launcher.metainfo.xml << 'XML'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <component type="desktop-application">
-            <id>com.trench.trinity.launcher</id>
-            <metadata_license>CC0-1.0</metadata_license>
-            <name>Trinity Launcher</name>
-            <summary>Minecraft Bedrock launcher for Linux</summary>
-            <description><p>Trinity Launcher runs Minecraft Bedrock on Linux.</p></description>
-            <launchable type="desktop-id">com.trench.trinity.launcher.desktop</launchable>
-          </component>
-          XML
-
-      - name: Descargar linuxdeploy y plugin Qt
-        run: |
-          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          wget https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod +x linuxdeploy*.AppImage
-
-      - name: Ejecutar empaquetado y generar zsync
-        run: |
-          export QMAKE=/usr/lib/qt6/bin/qmake
-          export LD_LIBRARY_PATH=$PWD/APPIMAGE-TRINITY/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
-          
-          ./linuxdeploy-x86_64.AppImage \
-            --appdir APPIMAGE-TRINITY \
-            -e APPIMAGE-TRINITY/usr/bin/trinity \
-            --desktop-file APPIMAGE-TRINITY/usr/share/applications/com.trench.trinity.launcher.desktop \
-            --icon-file APPIMAGE-TRINITY/usr/share/icons/hicolor/scalable/apps/com.trench.trinity.launcher.svg \
-            --plugin qt
-          
-          cp 32bitmcpe/bin/mcpelauncher-client86 APPIMAGE-TRINITY/usr/bin/
-          cp -ar 32bitmcpe/lib32/* APPIMAGE-TRINITY/usr/lib32/
-          chmod +x APPIMAGE-TRINITY/usr/bin/mcpelauncher-client86
-          
-          rm -rf APPIMAGE-TRINITY/usr/lib32/libGLdispatch.so*
-          rm -rf APPIMAGE-TRINITY/usr/lib32/libX*.so*
-          rm -rf APPIMAGE-TRINITY/usr/lib32/libxcb*.so*
-
-      - name: Cierre total de dependencias (bundle autocontenido)
-        run: |
-          # linuxdeploy salta su excludelist por diseno (asume glibc del
-          # host) y lo copiado a mano (webkit) no pasa por ldd: cualquier
-          # .so ausente se resuelve por ld.so.cache del HOST y con glibc
-          # propia eso es mezcla de ABIs = muerte (caso libgpg-error).
-          # 1) Familias glibc + excludelist forzadas al bundle.
-          DST=APPIMAGE-TRINITY/usr/lib
-          for l in ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libdl.so.2 \
-                   librt.so.1 libpthread.so.0 libnss_dns.so.2 \
-                   libnss_files.so.2 libresolv.so.2 libstdc++.so.6 \
-                   libgcc_s.so.1 libGL.so.1 libEGL.so.1 libGLX.so.0 \
-                   libGLdispatch.so.0 libOpenGL.so.0 libdrm.so.2 \
-                   libgbm.so.1 libwayland-client.so.0 libX11.so.6 \
-                   libX11-xcb.so.1 libxcb.so.1 libICE.so.6 libSM.so.6 \
-                   libuuid.so.1 libexpat.so.1 libfontconfig.so.1 \
-                   libfreetype.so.6 libharfbuzz.so.0 libfribidi.so.0 \
-                   libgmp.so.10 libgpg-error.so.0 libcom_err.so.2 \
-                   libz.so.1; do
-            src="$(find /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "$l" 2>/dev/null | head -n 1)"
-            if [ -z "$src" ]; then echo "AVISO: $l no esta en el runner" >&2; continue; fi
-            cp -afL "$src" "$DST/" || { echo "FATAL: no se pudo copiar $src" >&2; exit 1; }
-          done
-          # gconv: iconv fuera de UTF-8 (distros sin locales del host)
-          [ -d /lib/x86_64-linux-gnu/gconv ] && cp -r /lib/x86_64-linux-gnu/gconv $DST/
-          # Drivers DRI de Mesa: libGL los abre por dlopen desde su ruta
-          # compilada (host). Bundelarlos + LIBGL_DRIVERS_PATH evita que
-          # en Arch/musl cargue drivers del host contra glibc 2.39.
-          if [ -d /usr/lib/x86_64-linux-gnu/dri ]; then
-            mkdir -p $DST/dri
-            cp -afL /usr/lib/x86_64-linux-gnu/dri/*.so $DST/dri/ 2>/dev/null || true
-          fi
-          # 2) Barrido ldd sobre TODO ELF del bundle (caza restos: plugins
-          # Qt, auxiliares WebKit, etc.). Solo rutas del sistema.
-          : > /tmp/faltan
-          SCAN="APPIMAGE-TRINITY/usr/bin APPIMAGE-TRINITY/usr/lib APPIMAGE-TRINITY/usr/libexec APPIMAGE-TRINITY/usr/plugins"
-          for f in $(find $SCAN -type f 2>/dev/null); do
-            file -b "$f" | grep -q 'ELF' || continue
-            ldd "$f" 2>/dev/null | grep 'not found' | awk '{print $1}' | while read -r nf; do
-              [ -e "$DST/$nf" ] || echo "$nf (pedida por $f)" >> /tmp/faltan
-            done
-            ldd "$f" 2>/dev/null | grep '=> /' | awk '{print $3}' | while read -r lib; do
-              [ -n "$lib" ] || continue
-              [ -e "$DST/$(basename "$lib")" ] && continue
-              case "$lib" in /lib/*|/usr/lib/*) ;;
-                *) echo "AVISO: via rara $lib (pedida por $f)" >&2; continue;; esac
-              echo "cierre: $(basename "$lib") <- $f"
-              cp -afL "$lib" "$DST/" || echo "$lib (pedida por $f)" >> /tmp/faltan
-            done
-          done
-          if [ -s /tmp/faltan ]; then
-            echo "FATAL: NEEDED sin resolver:" >&2; sort -u /tmp/faltan >&2; exit 1
-          fi
-          # 3) Puerta: TODO ELF debe resolver 100% dentro del bundle bajo
-          # el loader propio (cero fallback al host). Falla ruidoso si no.
-          ROOT="$PWD/APPIMAGE-TRINITY"
-          LOADER="$DST/ld-linux-x86-64.so.2"
-          # OJO: --library-path DEBE ser absoluto; en relativo el loader
-          # ecoa las rutas tal cual y la comparacion daria falsos positivos.
-          DSTABS="$PWD/$DST"
-          : > /tmp/fugas
-          for f in $(find $SCAN -type f 2>/dev/null); do
-            file -b "$f" | grep -q 'ELF' || continue
-            case "$(basename "$f")" in ld-linux*) continue;; esac
-            LD_TRACE_LOADED_OBJECTS=1 "$PWD/$LOADER" --library-path "$DSTABS" "$PWD/$f" 2>/dev/null \
-              | grep '=>' | awk '{print $3}' | while read -r p; do
-              case "$p" in "$ROOT"/*) ;; *) echo "$p (pedida por $f)" >> /tmp/fugas;; esac
-            done
-          done
-          if [ -s /tmp/fugas ]; then
-            echo "FATAL: fugas al host:" >&2; sort -u /tmp/fugas >&2; exit 1
-          fi
-          echo "cierre verificado: 0 fugas al host."
-
-      - name: Envolver helpers con el loader propio (musl-safe)
-        run: |
-          # Todo ELF ejecutable secundario (cliente, extract, webview,
-          # daemons, lspci, auxiliares WebKit/Qt) pasaria por el PT_INTERP
-          # del host (/lib64/ld-linux...), que NO existe en musl. Se
-          # renombra a .real y un wrapper sh lo lanza con el loader del
-          # bundle. En glibc es inocuo (mismo loader, misma glibc).
-          # Excepciones: trinity (lo lanza AppRun), mcpelauncher-client86
-          # (sidecar 32-bit: necesita multilib del host, solo glibc).
-          WRAP='b="$0"; case "$b" in */*) :;; *) b="$(command -v "$0")";; esac
-          b="$(readlink -f "$b")"; R="$(readlink -f "$(dirname "$b")/../..")"
-          exec "$R/usr/lib/ld-linux-x86-64.so.2" --library-path "$R/usr/lib" "$b.real" "$@"'
-          for d in APPIMAGE-TRINITY/usr/bin APPIMAGE-TRINITY/usr/libexec \
-                   APPIMAGE-TRINITY/usr/lib/webkit2gtk-4.1; do
-            [ -d "$d" ] || continue
-            find "$d" -maxdepth 1 -type f -executable | while read -r f; do
-              case "$f" in *.so*|*.real) continue;; esac
-              case "$(basename "$f")" in trinity|mcpelauncher-client86) continue;; esac
-              file -b "$f" | grep -q 'ELF.*executable' || continue
-              mv "$f" "$f.real"
-              printf '#!/bin/sh\n%s\n' "$WRAP" > "$f"
-              chmod +x "$f"
-              echo "wrapped: $f"
-            done
-          done
-
-      - name: Proveedores EGL de Mesa (GLVND)
-        run: |
-          # glvnd (libEGL/libGLX/libGLESv2 del bundle) elige vendedor por
-          # .json; los del host apuntan a su Mesa (mismatch con glibc 2.39).
-          # Se empaquetan los de Mesa con library_path pelado (=basename) y
-          # con LD_LIBRARY_PATH del AppRun resuelven al bundle en cual host.
-          DST=APPIMAGE-TRINITY/usr/lib
-          VDIR=APPIMAGE-TRINITY/usr/share/glvnd/egl_vendor.d
-          mkdir -p "$VDIR"
-          for l in libEGL_mesa.so.0 libGLX_mesa.so.0 libGLESv2.so.2 libGLESv1_CM.so.1; do
-            src="$(find /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "$l" 2>/dev/null | head -n 1)"
-            [ -n "$src" ] || { echo "AVISO: $l no esta en el runner" >&2; continue; }
-            cp -afL "$src" "$DST/" || { echo "FATAL: $src" >&2; exit 1; }
-          done
-          cp /usr/share/glvnd/egl_vendor.d/*.json "$VDIR/" 2>/dev/null || \
-            { echo "FATAL: sin egl_vendor.d en el runner" >&2; exit 1; }
-          python3 - "$VDIR" <<'PY'
-          import json, os, sys
-          for fn in os.listdir(sys.argv[1]):
-              p = os.path.join(sys.argv[1], fn)
-              if not fn.endswith('.json'): continue
-              with open(p) as f: d = json.load(f)
-              if 'library_path' not in d: continue
-              d['library_path'] = os.path.basename(d['library_path'])
-              with open(p, 'w') as f: json.dump(d, f, indent=4)
-          print('vendors:', os.listdir(sys.argv[1]))
-          PY
-
-      - name: RPATH $ORIGIN en todo ELF (dlopen sin env)
-        run: |
-          # El dlopen (SDL, EGL, plugins) ignora --library-path: con RPATH
-          # relativo cada objeto encuentra al bundle sin LD_LIBRARY_PATH,
-          # asi los hijos del host (/bin/sh de los wrappers, xdg-open...)
-          # nacen con entorno limpio. RPATH (no RUNPATH) propaga a hijos.
-          for f in $(find APPIMAGE-TRINITY/usr/bin APPIMAGE-TRINITY/usr/lib \
-                          APPIMAGE-TRINITY/usr/libexec APPIMAGE-TRINITY/usr/plugins \
-                          -type f 2>/dev/null); do
-            # Solo dinamicos: los estaticos (zig) no tienen .dynamic y
-            # patchelf muere con ellos.
-            file -b "$f" | grep -q 'dynamically linked' || continue
-            case "$f" in *lib32*|*client86*|*ld-linux*) continue;; esac
-            patchelf --set-rpath '$ORIGIN:$ORIGIN/..:$ORIGIN/../lib' --force-rpath "$f" \
-              || { echo "FATAL: patchelf $f" >&2; exit 1; }
-          done
-          echo "RPATH aplicado."
-
-      - name: Dieta pre-compresion (maximo SquashFS)
-        run: |
-          rm -rf APPIMAGE-TRINITY/usr/share/doc APPIMAGE-TRINITY/usr/share/man
-          find APPIMAGE-TRINITY/usr/bin APPIMAGE-TRINITY/usr/lib \
-               APPIMAGE-TRINITY/usr/lib32 APPIMAGE-TRINITY/usr/libexec \
-               -type f 2>/dev/null | while read -r f; do
-            file -b "$f" | grep -q 'ELF' || continue
-            strip --strip-unneeded "$f" 2>/dev/null || true
-          done
-
-      - name: Empaquetar SquashFS + zsync
-        run: |
-          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool-x86_64.AppImage
-          
-          export APPIMAGE_EXTRACT_AND_RUN=1
-          export UPDATE_INFORMATION="gh-releases-zsync|${GITHUB_REPOSITORY%/*}|${GITHUB_REPOSITORY#*/}|latest-classic|Trinity_Launcher-x86_64-classic.AppImage.zsync"
-          ARCH=x86_64 ./appimagetool-x86_64.AppImage -u "$UPDATE_INFORMATION" APPIMAGE-TRINITY Trinity_Launcher-x86_64-classic.AppImage
-      
-      - name: Subir a Release (latest-classic)
+      - name: Subir a Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: latest-classic
+          tag_name: ${{ env.CHANNEL }}-classic
           files: |
             Trinity_Launcher-x86_64-classic.AppImage
             *.zsync

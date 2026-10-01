@@ -329,14 +329,45 @@ fi
 rm -rf "$_QS_REFDIR"
 echo "sharun integro."
 
-echo "=== 7/7 Empaquetar (DwarFS + uruntime) y test ==="
+# PACKAGER=appimage -> DwarFS + uruntime (AnyLinux, portable total, musl/NixOS).
+# PACKAGER=squashfs -> MISMO AppDir (sharun + glibc propia, igual de portable)
+#                      pero envuelto con el appimagetool clasico (SquashFS
+#                      tipo 2), que es lo unico que monta el test del catalogo
+#                      appimage.github.io. Sin cambios de runtime: todo lo que
+#                      ya funciona (EGL, dlopen, NSS, audio) lo resuelve sharun.
+PACKAGER="${PACKAGER:-appimage}"
+
+echo "=== 7/7 Empaquetar (PACKAGER=$PACKAGER) y test ==="
 export OUTPATH OUTNAME UPINFO
-./quick-sharun --make-appimage
+if [ "$PACKAGER" = "squashfs" ] ; then
+	# AppRun/.DirIcon/.desktop ya los deja quick-sharun (DIRICON en su
+	# linea 44); solo se ancla el .desktop en la raiz del AppDir, que es
+	# lo que leen tanto appimagetool como el worker del catalogo.
+	d="$(find AppDir -name 'com.trench.trinity.launcher.desktop' -type f | head -n 1)"
+	i="$(find AppDir -name 'com.trench.trinity.launcher.svg' -type f | head -n 1)"
+	[ -n "$d" ] || { echo "FATAL: .desktop no desplegado" >&2; exit 1; }
+	ln -sf "$(realpath --relative-to=AppDir "$d")" AppDir/com.trench.trinity.launcher.desktop
+	if [ -n "$i" ] ; then
+		ln -sf "$(realpath --relative-to=AppDir "$i")" AppDir/.DirIcon
+		ln -sf "$(realpath --relative-to=AppDir "$i")" AppDir/com.trench.trinity.launcher.svg
+	fi
+	grep -q '^StartupWMClass=' "$d" || echo 'StartupWMClass=com.trench.trinity.launcher' >> "$d"
+	# appimagetool upstream (no el fork DwarFS de pkgforge): SquashFS tipo 2.
+	mkdir -p "$OUTPATH"
+	wget --retry-connrefused --tries=30 -q \
+		"https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
+		-O ./appimagetool-classic
+	chmod +x ./appimagetool-classic
+	APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool-classic \
+		-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
+else
+	./quick-sharun --make-appimage
+fi
 # Test: --simple-test en vez de --test. El full exige 12 s de GUI en idle
 # y en CI headless la app sale (codigo 0) justo tras arrancar; el simple
 # falla solo ante lo que indica un deploy roto (symbol lookup error o
 # shared libraries faltantes). Es el fallback previsto por quick-sharun.
 export APPIMAGE_EXTRACT_AND_RUN=1
-xvfb-run -a ./quick-sharun --simple-test ./dist/*.AppImage
+xvfb-run -a ./quick-sharun --simple-test "$OUTPATH"/*.AppImage
 
 echo "Listo: $OUTPATH/$OUTNAME"
