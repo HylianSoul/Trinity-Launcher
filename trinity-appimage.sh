@@ -210,8 +210,19 @@ for helper in msa-daemon mcpelauncher-error; do
 		BINS="$BINS /usr/bin/$helper"
 	fi
 done
+# SDL3 abre libasound por dlopen en runtime (invisible a ldd y al strace
+# de Trinity, que nunca juega): sin esto no hay fallback ALSA y el audio
+# muere si falla la ruta Pulse/PipeWire (la nightly usa el ALSA del host).
+if [ -f /usr/lib/libasound.so.2 ]; then
+	BINS="$BINS /usr/lib/libasound.so.2"
+fi
 # shellcheck disable=SC2086
 ./quick-sharun $BINS
+# Sin bwrap empaquetado: WebKit cae a modo sin sandbox, igual que la
+# nightly original (que no lo trae). Con sandbox empaquetado el login
+# muere en kernels sin userns sin privilegios.
+rm -f AppDir/bin/bwrap AppDir/bin/xdg-dbus-proxy \
+	AppDir/shared/bin/bwrap AppDir/shared/bin/xdg-dbus-proxy
 
 echo "=== 6b/7 Datos extra + sidecar 32-bit (x86_64) ==="
 # linux-bin: datos del engine, no son ELF asi que van directo a share/
@@ -244,8 +255,10 @@ fi
 # Vars de runtime que el AppRun/sharun expande al lanzar (sin expandir aqui)
 echo 'MCPELAUNCHER_DATA_DIR=${SHARUN_DIR}/share/mcpelauncher' >> AppDir/.env
 echo 'PCI_IDS=${SHARUN_DIR}/share/hwdata/pci.ids' >> AppDir/.env
-# Backend de login Xbox (igual que el AppRun del nightly).
+# Backend de login Xbox (igual que el AppRun del nightly: todo X11).
 echo 'GDK_BACKEND=x11' >> AppDir/.env
+echo 'QT_QPA_PLATFORM=xcb' >> AppDir/.env
+echo 'DISABLE_WAYLAND=1' >> AppDir/.env
 echo 'WEBKIT_EXEC_PATH=${SHARUN_DIR}/lib/webkit2gtk-4.1' >> AppDir/.env
 # Aislamiento anti-crash en distros con userland viejo (Void/musl, etc):
 # - fusion: el host puede traer QT_QPA_PLATFORMTHEME=gtk3 y el plugin
