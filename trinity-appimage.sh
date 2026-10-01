@@ -191,9 +191,11 @@ export DEPLOY_OPENGL=1 DEPLOY_VULKAN=1 DEPLOY_SDL=1 DEPLOY_PIPEWIRE=1 DEPLOY_PUL
 # Descubrimiento dual ldd+strace: sin STRACE_MODE los modulos que Qt/SDL3
 # abren por dlopen (audio, plataformas) son invisibles y no entran al bundle.
 export STRACE_MODE=1
-# DIAGNOSTICO: anylinux.so (hooks execv/dlopen/nss) desactivado. La
-# classic funciona sin interposicion; si esto revive audio+login+mundos,
-# la interposicion era la causa. Loader+glibc empaquetados intactos.
+# SIN anylinux.so: su interposicion LD_PRELOAD (hooks execv/dlopen/nss)
+# rompia el spawn del webview (login->Drowned), la presencia Xbox
+# (multijugador) y el audio (backends SDL por dlopen). Verificado: con
+# ANYLINUX_LIB=0 todo funciona; la classic tampoco lo usa. Loader+glibc
+# empaquetados intactos (portabilidad a kernels viejos/musl intacta).
 export ANYLINUX_LIB=0
 # Integracion con el escritorio/Wayland: el compositor agrupa por app_id;
 # sin esto muestra un engranaje generico en vez del lanzador de Trinity.
