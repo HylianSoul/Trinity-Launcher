@@ -30,7 +30,7 @@ ARCH="$(uname -m)"
 ROOT="$PWD"
 OUTPATH="${OUTPATH:-$ROOT/dist}"
 CHANNEL="${CHANNEL:-latest}"
-OUTNAME="Trinity_Launcher-$ARCH.AppImage"
+OUTNAME="${OUTNAME:-Trinity_Launcher-$ARCH.AppImage}"
 # UPINFO por canal: latest y nightly actualizan cada uno su propio tag
 # (antes el nightly apuntaba a latest y se pisaban entre si).
 if [ -z "${UPINFO:-}" ]; then
@@ -366,6 +366,12 @@ if [ "$PACKAGER" = "squashfs" ] ; then
 	chmod +x ./appimagetool-classic
 	APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool-classic \
 		-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
+	# appimagetool deja el .zsync en el CWD: se junta con el AppImage para
+	# que el artefacto (path: dist) y el release (*.zsync) lo encuentren.
+	for z in ./*.zsync; do
+		[ -e "$z" ] || continue
+		mv -f "$z" "$OUTPATH/"
+	done
 else
 	./quick-sharun --make-appimage
 fi

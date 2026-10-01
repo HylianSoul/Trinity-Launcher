@@ -46,7 +46,7 @@ jobs:
 
       - name: Construir AppImage classic-universal
         env:
-          UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|${{ github.event_name == 'schedule' && 'nightly-classic' || github.event.inputs.channel }}-classic|Trinity_Launcher-x86_64-classic.AppImage.zsync
+          UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|${{ env.CHANNEL }}-classic|Trinity_Launcher-x86_64-classic.AppImage.zsync
         run: sh ./trinity-appimage.sh
 
       - name: Subir artefacto
