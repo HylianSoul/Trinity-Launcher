@@ -88,7 +88,8 @@ jobs:
         run: |
           cd trinity
           chmod +x build.sh
-          ./build.sh --deps
+          # Sin --deps: las deps ya se instalaron arriba con nombres de
+          # jammy; build.sh --deps pediria qt6-svg-dev (inexistente en 22.04).
           ./build.sh --release
 
       - name: Preparar estructura AppDir
