@@ -346,10 +346,16 @@ if [ "$PACKAGER" = "squashfs" ] ; then
 	d="$(find AppDir -name 'com.trench.trinity.launcher.desktop' -type f | head -n 1)"
 	i="$(find AppDir -name 'com.trench.trinity.launcher.svg' -type f | head -n 1)"
 	[ -n "$d" ] || { echo "FATAL: .desktop no desplegado" >&2; exit 1; }
-	ln -sf "$(realpath --relative-to=AppDir "$d")" AppDir/com.trench.trinity.launcher.desktop
+	# quick-sharun ya deja el .desktop real en la raiz: solo se enlaza si
+	# esta en otro sitio (ln contra si mismo = symloop).
+	if [ "$d" != "AppDir/com.trench.trinity.launcher.desktop" ] ; then
+		ln -sf "$(realpath --relative-to=AppDir "$d")" AppDir/com.trench.trinity.launcher.desktop
+	fi
 	if [ -n "$i" ] ; then
+		if [ "$i" != "AppDir/com.trench.trinity.launcher.svg" ] ; then
+			ln -sf "$(realpath --relative-to=AppDir "$i")" AppDir/com.trench.trinity.launcher.svg
+		fi
 		ln -sf "$(realpath --relative-to=AppDir "$i")" AppDir/.DirIcon
-		ln -sf "$(realpath --relative-to=AppDir "$i")" AppDir/com.trench.trinity.launcher.svg
 	fi
 	grep -q '^StartupWMClass=' "$d" || echo 'StartupWMClass=com.trench.trinity.launcher' >> "$d"
 	# appimagetool upstream (no el fork DwarFS de pkgforge): SquashFS tipo 2.
