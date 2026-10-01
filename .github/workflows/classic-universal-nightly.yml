@@ -159,6 +159,9 @@ jobs:
           export QML2_IMPORT_PATH="$HERE/usr/qml"
           export QML_IMPORT_PATH="$HERE/usr/qml"
           export WEBKIT_EXEC_PATH="$LIB/webkit2gtk-4.1"
+          # Drivers DRI empaquetados (ver paso de cierre): sin esto libGL
+          # los buscaria en la ruta compilada del host.
+          export LIBGL_DRIVERS_PATH="$LIB/dri"
           # Sin bwrap empaquetado WebKit cae a modo sin sandbox (igual que la
           # nightly original que funciona); con sandbox muere en kernels sin
           # userns y bajo firejail del test oficial.
@@ -226,24 +229,76 @@ jobs:
           rm -rf APPIMAGE-TRINITY/usr/lib32/libX*.so*
           rm -rf APPIMAGE-TRINITY/usr/lib32/libxcb*.so*
 
-      - name: Bundelar glibc + loader propios (glibc y musl)
+      - name: Cierre total de dependencias (bundle autocontenido)
         run: |
-          # linuxdeploy excluye la familia glibc por diseno (asume glibc del
-          # host). Al bundelarla, el kernel ya no importa: la misma imagen
-          # corre en glibc vieja/nueva y en musl (el userland del host no se
-          # toca; solo syscalls, que son los mismos). glibc 2.39 pide
-          # kernel >= 3.2.
-          LIBDIR=/lib/x86_64-linux-gnu
+          # linuxdeploy salta su excludelist por diseno (asume glibc del
+          # host) y lo copiado a mano (webkit) no pasa por ldd: cualquier
+          # .so ausente se resuelve por ld.so.cache del HOST y con glibc
+          # propia eso es mezcla de ABIs = muerte (caso libgpg-error).
+          # 1) Familias glibc + excludelist forzadas al bundle.
           DST=APPIMAGE-TRINITY/usr/lib
           for l in ld-linux-x86-64.so.2 libc.so.6 libm.so.6 libdl.so.2 \
                    librt.so.1 libpthread.so.0 libnss_dns.so.2 \
-                   libnss_files.so.2 libresolv.so.2; do
-            cp -a $LIBDIR/$l* $DST/ 2>/dev/null || true
+                   libnss_files.so.2 libresolv.so.2 libstdc++.so.6 \
+                   libgcc_s.so.1 libGL.so.1 libEGL.so.1 libGLX.so.0 \
+                   libGLdispatch.so.0 libOpenGL.so.0 libdrm.so.2 \
+                   libgbm.so.1 libwayland-client.so.0 libX11.so.6 \
+                   libX11-xcb.so.1 libxcb.so.1 libICE.so.6 libSM.so.6 \
+                   libuuid.so.1 libexpat.so.1 libfontconfig.so.1 \
+                   libfreetype.so.6 libharfbuzz.so.0 libfribidi.so.0 \
+                   libgmp.so.10 libgpg-error.so.0 libcom_err.so.2 \
+                   libz.so.1; do
+            src="$(find /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu -maxdepth 1 -name "$l" 2>/dev/null | head -n 1)"
+            if [ -z "$src" ]; then echo "AVISO: $l no esta en el runner" >&2; continue; fi
+            cp -afL "$src" "$DST/" || { echo "FATAL: no se pudo copiar $src" >&2; exit 1; }
           done
           # gconv: iconv fuera de UTF-8 (distros sin locales del host)
-          [ -d $LIBDIR/gconv ] && cp -r $LIBDIR/gconv $DST/
-          ls $DST/ | grep -E "^(ld-linux|libc\.so|libm\.so|libnss_dns)" || \
-            { echo "FATAL: glibc no bundelada" >&2; exit 1; }
+          [ -d /lib/x86_64-linux-gnu/gconv ] && cp -r /lib/x86_64-linux-gnu/gconv $DST/
+          # Drivers DRI de Mesa: libGL los abre por dlopen desde su ruta
+          # compilada (host). Bundelarlos + LIBGL_DRIVERS_PATH evita que
+          # en Arch/musl cargue drivers del host contra glibc 2.39.
+          if [ -d /usr/lib/x86_64-linux-gnu/dri ]; then
+            mkdir -p $DST/dri
+            cp -afL /usr/lib/x86_64-linux-gnu/dri/*.so $DST/dri/ 2>/dev/null || true
+          fi
+          # 2) Barrido ldd sobre TODO ELF del bundle (caza restos: plugins
+          # Qt, auxiliares WebKit, etc.). Solo rutas del sistema.
+          : > /tmp/faltan
+          SCAN="APPIMAGE-TRINITY/usr/bin APPIMAGE-TRINITY/usr/lib APPIMAGE-TRINITY/usr/libexec APPIMAGE-TRINITY/usr/plugins"
+          for f in $(find $SCAN -type f 2>/dev/null); do
+            file -b "$f" | grep -q 'ELF' || continue
+            ldd "$f" 2>/dev/null | grep 'not found' | awk '{print $1}' | while read -r nf; do
+              [ -e "$DST/$nf" ] || echo "$nf (pedida por $f)" >> /tmp/faltan
+            done
+            ldd "$f" 2>/dev/null | grep '=> /' | awk '{print $3}' | while read -r lib; do
+              [ -n "$lib" ] || continue
+              [ -e "$DST/$(basename "$lib")" ] && continue
+              case "$lib" in /lib/*|/usr/lib/*) ;;
+                *) echo "AVISO: via rara $lib (pedida por $f)" >&2; continue;; esac
+              echo "cierre: $(basename "$lib") <- $f"
+              cp -afL "$lib" "$DST/" || echo "$lib (pedida por $f)" >> /tmp/faltan
+            done
+          done
+          if [ -s /tmp/faltan ]; then
+            echo "FATAL: NEEDED sin resolver:" >&2; sort -u /tmp/faltan >&2; exit 1
+          fi
+          # 3) Puerta: TODO ELF debe resolver 100% dentro del bundle bajo
+          # el loader propio (cero fallback al host). Falla ruidoso si no.
+          ROOT="$PWD/APPIMAGE-TRINITY"
+          LOADER="$DST/ld-linux-x86-64.so.2"
+          : > /tmp/fugas
+          for f in $(find $SCAN -type f 2>/dev/null); do
+            file -b "$f" | grep -q 'ELF' || continue
+            case "$(basename "$f")" in ld-linux*) continue;; esac
+            LD_TRACE_LOADED_OBJECTS=1 "$LOADER" --library-path "$DST" "$f" 2>/dev/null \
+              | grep '=>' | awk '{print $3}' | while read -r p; do
+              case "$p" in "$ROOT"/*) ;; *) echo "$p (pedida por $f)" >> /tmp/fugas;; esac
+            done
+          done
+          if [ -s /tmp/fugas ]; then
+            echo "FATAL: fugas al host:" >&2; sort -u /tmp/fugas >&2; exit 1
+          fi
+          echo "cierre verificado: 0 fugas al host."
 
       - name: Envolver helpers con el loader propio (musl-safe)
         run: |
