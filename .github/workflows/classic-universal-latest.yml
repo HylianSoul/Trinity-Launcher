@@ -284,11 +284,14 @@ jobs:
           # el loader propio (cero fallback al host). Falla ruidoso si no.
           ROOT="$PWD/APPIMAGE-TRINITY"
           LOADER="$DST/ld-linux-x86-64.so.2"
+          # OJO: --library-path DEBE ser absoluto; en relativo el loader
+          # ecoa las rutas tal cual y la comparacion daria falsos positivos.
+          DSTABS="$PWD/$DST"
           : > /tmp/fugas
           for f in $(find $SCAN -type f 2>/dev/null); do
             file -b "$f" | grep -q 'ELF' || continue
             case "$(basename "$f")" in ld-linux*) continue;; esac
-            LD_TRACE_LOADED_OBJECTS=1 "$LOADER" --library-path "$DST" "$f" 2>/dev/null \
+            LD_TRACE_LOADED_OBJECTS=1 "$PWD/$LOADER" --library-path "$DSTABS" "$PWD/$f" 2>/dev/null \
               | grep '=>' | awk '{print $3}' | while read -r p; do
               case "$p" in "$ROOT"/*) ;; *) echo "$p (pedida por $f)" >> /tmp/fugas;; esac
             done
