@@ -16,6 +16,7 @@ jobs:
     container: ghcr.io/pkgforge-dev/archlinux:latest
     env:
       PACKAGER: squashfs
+      OUTNAME: Trinity_Launcher-x86_64-classic.AppImage
       CHANNEL: nightly
 
     steps:
