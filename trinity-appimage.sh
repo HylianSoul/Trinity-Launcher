@@ -360,11 +360,23 @@ if [ "$PACKAGER" = "squashfs" ] ; then
 	grep -q '^StartupWMClass=' "$d" || echo 'StartupWMClass=com.trench.trinity.launcher' >> "$d"
 	# appimagetool upstream (no el fork DwarFS de pkgforge): SquashFS tipo 2.
 	mkdir -p "$OUTPATH"
+	# Runtime tipo 2 ESTATICO oficial: sin el, check-libc.sh del catalogo
+	# reporta Runtime=dynamic / Self-Contained=false (aunque la glibc de la
+	# carga ya va empaquetada).
+	wget --retry-connrefused --tries=30 -q \
+		"https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-$ARCH" \
+		-O ./runtime-classic
+	chmod +x ./runtime-classic
+	if readelf -lW ./runtime-classic 2>/dev/null | grep -q 'Requesting program interpreter' ; then
+		echo "FATAL: el runtime descargado es dinamico, se quiere estatico" >&2
+		exit 1
+	fi
 	wget --retry-connrefused --tries=30 -q \
 		"https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
 		-O ./appimagetool-classic
 	chmod +x ./appimagetool-classic
 	APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool-classic \
+		--runtime-file ./runtime-classic \
 		-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
 	# appimagetool deja el .zsync en el CWD: se junta con el AppImage para
 	# que el artefacto (path: dist) y el release (*.zsync) lo encuentren.
