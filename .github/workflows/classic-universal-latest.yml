@@ -1,15 +1,19 @@
-name: Classic Universal latest (catalogo + musl/glibc)
+name: Classic Universal (catalogo + musl/glibc)
 
 # Edicion para el catalogo appimage.github.io. NO es un empaquetado nuevo:
 # es EXACTAMENTE el pipeline AnyLinux (quick-sharun + sharun + glibc propia,
-# ya probado en Arch) con PACKAGER=squashfs, que envuelve el mismo AppDir
-# con el appimagetool clasico -> SquashFS tipo 2, el unico formato que monta
-# el test del catalogo (error-not-squashfs con DwarFS).
+# ANYLINUX_LIB=0, ya probado) con PACKAGER=squashfs, que envuelve el mismo
+# AppDir con el appimagetool clasico -> SquashFS tipo 2, el unico formato
+# que monta el test del catalogo (error-not-squashfs con DwarFS).
 #
 # Reglas del catalogo que cumple: una sola x86_64 por tag, nombre sin
 # version/nightly/debug, update-info + .zsync, icono, .DirIcon,
-# desktop-file-validate, metainfo AppStream, X11 forzado, y el mismo
-# ANYLINUX_LIB=0 que hace funcionar login/audio/multijugador.
+# desktop-file-validate, X11 forzado, runtime tipo 2 estatico
+# (Self-Contained=true) y xz en latest (payload 203 -> 154 MB).
+#
+# Un solo workflow para los dos canales (antes habia dos que escribian el
+# mismo tag nightly-classic a la misma hora): schedule -> nightly,
+# dispatch manual -> canal elegido. Matriz x86_64 + aarch64 en el mismo tag.
 
 on:
   workflow_dispatch:
@@ -25,14 +29,30 @@ on:
   schedule:
     - cron: '0 7 * * *'
 
+# Un tag, un escritor: sin esto un dispatch manual pisa el cron (o al
+# reves) y el release queda a medias. No se cancela en curso para no
+# dejar tags parciales.
+concurrency:
+  group: classic-${{ github.event_name == 'schedule' && 'nightly' || github.event.inputs.channel || 'latest' }}
+  cancel-in-progress: false
+
 jobs:
   build:
-    # El catalogo solo prueba x86_64 (aarch64 queda fuera por regla).
-    runs-on: ubuntu-24.04
+    name: classic ${{ matrix.arch }}
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runs-on: ubuntu-24.04
+          - arch: aarch64
+            runs-on: ubuntu-24.04-arm
+    # Regla anylinux: compilar SOLO en Arch Linux (igual que anylinux-appimage.yml).
     container: ghcr.io/pkgforge-dev/archlinux:latest
     env:
       PACKAGER: squashfs
-      OUTNAME: Trinity_Launcher-x86_64-classic.AppImage
+      OUTNAME: Trinity_Launcher-${{ matrix.arch }}-classic.AppImage
       CHANNEL: ${{ github.event_name == 'schedule' && 'nightly' || github.event.inputs.channel || 'latest' }}
 
     steps:
@@ -41,31 +61,46 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      - name: Cache ccache + zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ccache
+            .zig-cache
+          key: classic-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: |
+            classic-${{ matrix.arch }}-
+
       - name: Clonar mcpe-nx
         run: git clone ${{ secrets.MCPE_NX }} mcpe-nx > /dev/null 2>&1
 
       - name: Construir AppImage classic-universal
         env:
-          UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|${{ env.CHANNEL }}-classic|Trinity_Launcher-x86_64-classic.AppImage.zsync
-        run: sh ./trinity-appimage.sh
+          UPINFO: gh-releases-zsync|${{ github.repository_owner }}|${{ github.event.repository.name }}|${{ env.CHANNEL }}-classic|Trinity_Launcher-${{ matrix.arch }}-classic.AppImage.zsync
+        run: |
+          sleep 10 # el runner a veces monta el checkout del commit anterior
+          sh ./trinity-appimage.sh
 
       - name: Subir artefacto
         uses: actions/upload-artifact@v4
         with:
-          name: Trinity_Launcher-x86_64-classic-${{ env.CHANNEL }}
+          name: Trinity_Launcher-${{ matrix.arch }}-classic-${{ env.CHANNEL }}
           path: dist
 
   release:
-    if: ${{ needs.build.result == 'success' }}
+    # Publica lo que haya: si el estreno de un arch falla, el otro sale
+    # igual en vez de bloquear el tag que el catalogo prueba.
+    if: ${{ !cancelled() }}
     needs: [build]
-    permissions: write-all
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     env:
       CHANNEL: ${{ github.event_name == 'schedule' && 'nightly' || github.event.inputs.channel || 'latest' }}
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: Trinity_Launcher-x86_64-classic-${{ env.CHANNEL }}
+          pattern: Trinity_Launcher-*-classic-${{ env.CHANNEL }}
           merge-multiple: true
 
       - name: Subir a Release
@@ -73,5 +108,5 @@ jobs:
         with:
           tag_name: ${{ env.CHANNEL }}-classic
           files: |
-            Trinity_Launcher-x86_64-classic.AppImage
+            Trinity_Launcher-*.AppImage
             *.zsync

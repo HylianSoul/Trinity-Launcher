@@ -51,7 +51,7 @@ fi
 
 echo "=== 1/7 Dependencias del sistema (Arch) ==="
 $SUDO pacman -Syu --noconfirm \
-	base-devel git curl wget cmake clang ninja patchelf zsync \
+	base-devel git curl wget cmake clang ninja patchelf zsync ccache \
 	xorg-server-xvfb pciutils hwdata dbus \
 	qt6-base qt6-declarative qt6-webengine qt6-svg qt6-tools qt6-translations \
 	gtk3 webkit2gtk-4.1 \
@@ -115,6 +115,16 @@ fi
 echo "=== 4/7 Compilar engine (sin GUI, SDL3) + extractor (Zig) + Trinity ==="
 export CC=clang
 export CXX=clang++
+# ccache: acelera recompilaciones (nightly) sin cambiar ni un byte del
+# resultado (cache content-addressed). Sin ccache instalado se omite solo.
+CCACHE_LAUNCHER=""
+if command -v ccache >/dev/null 2>&1; then
+	CCACHE_DIR="${CCACHE_DIR:-$ROOT/.ccache}"
+	export CCACHE_DIR
+	mkdir -p "$CCACHE_DIR"
+	CCACHE_LAUNCHER="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+fi
+# shellcheck disable=SC2086
 cmake -S mcpe-nx -B mcpe-nx/build -G Ninja \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DBUILD_WEBVIEW=OFF \
@@ -124,6 +134,7 @@ cmake -S mcpe-nx -B mcpe-nx/build -G Ninja \
 	-DSDL3_VENDORED=ON \
 	-DENABLE_DEV_PATHS=OFF \
 	-DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+	$CCACHE_LAUNCHER \
 	-Wno-dev
 cmake --build mcpe-nx/build --parallel "$(nproc)"
 
@@ -133,12 +144,18 @@ if ! command -v zig >/dev/null 2>&1; then
 	tar -xf "$ZIG_TAR"
 	export PATH="$ROOT/zig-$ARCH-linux-$ZIG_VER:$PATH"
 fi
-(cd tapk-extract && zig build --release=fast -Dtarget=native -Dcpu=baseline)
+# Cache de Zig dentro del workspace (la persiste actions/cache en CI):
+# local separada por proyecto, global compartida (content-addressed).
+ZIG_CACHE_DIR="$ROOT/.zig-cache"
+mkdir -p "$ZIG_CACHE_DIR/tapk-local" "$ZIG_CACHE_DIR/webview-local" "$ZIG_CACHE_DIR/global"
+(cd tapk-extract && zig build --release=fast -Dtarget=native -Dcpu=baseline \
+	--cache-dir "$ZIG_CACHE_DIR/tapk-local" --global-cache-dir "$ZIG_CACHE_DIR/global")
 # Backend de login Xbox (igual que el workflow nightly): el flujo MSA/OAuth
 # del engine lo sirve lite-webview. Sin esto el login no puede completarse.
 # Solo existe en el engine privado; si no esta, se omite sin romper nada.
 if [ -d mcpe-nx/lite-webview ]; then
-	(cd mcpe-nx/lite-webview && zig build --release=fast -Dtarget=native -Dcpu=baseline)
+	(cd mcpe-nx/lite-webview && zig build --release=fast -Dtarget=native -Dcpu=baseline \
+		--cache-dir "$ZIG_CACHE_DIR/webview-local" --global-cache-dir "$ZIG_CACHE_DIR/global")
 fi
 
 if [ "$ARCH" != "x86_64" ]; then
@@ -146,10 +163,12 @@ if [ "$ARCH" != "x86_64" ]; then
 	find . -name "CMakeLists.txt" -exec sed -i 's/-msse3\b//g;s/-msse4[^ ]*//g;s/-mavx[^ ]*//g' {} \;
 	sed -i 's/-msse3\b//g;s/-msse4[^ ]*//g;s/-mavx[^ ]*//g' build.sh || true
 fi
+# shellcheck disable=SC2086
 cmake -S . -B build -G Ninja \
 	-DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_C_COMPILER=clang \
 	-DCMAKE_CXX_COMPILER=clang++ \
+	$CCACHE_LAUNCHER \
 	-Wno-dev
 cmake --build build --parallel "$(nproc)"
 
@@ -360,6 +379,22 @@ if [ "$PACKAGER" = "squashfs" ] ; then
 	grep -q '^StartupWMClass=' "$d" || echo 'StartupWMClass=com.trench.trinity.launcher' >> "$d"
 	# appimagetool upstream (no el fork DwarFS de pkgforge): SquashFS tipo 2.
 	mkdir -p "$OUTPATH"
+	# Limpieza: jamas subir un artefacto anterior junto al nuevo.
+	rm -f "$OUTPATH"/*.AppImage "$OUTPATH"/*.zsync
+	# Capa de validacion Vulkan: herramienta de debug (31 MB) que ningun
+	# binario linkea; fuera del bundle classic (AnyLinux no se toca).
+	rm -f AppDir/lib/libVkLayer_* \
+		AppDir/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
+	# Compresor: xz en latest (payload 203 -> 154 MB medido), gzip en
+	# nightly (empaqueta mas rapido). Solo gzip y xz los monta el runtime.
+	COMPRESSION="${COMPRESSION:-}"
+	if [ -z "$COMPRESSION" ]; then
+		if [ "$CHANNEL" = "latest" ]; then
+			COMPRESSION="xz"
+		else
+			COMPRESSION="gzip"
+		fi
+	fi
 	# Runtime tipo 2 ESTATICO oficial: sin el, check-libc.sh del catalogo
 	# reporta Runtime=dynamic / Self-Contained=false (aunque la glibc de la
 	# carga ya va empaquetada).
@@ -372,12 +407,18 @@ if [ "$PACKAGER" = "squashfs" ] ; then
 		exit 1
 	fi
 	wget --retry-connrefused --tries=30 -q \
-		"https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
+		"https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-$ARCH.AppImage" \
 		-O ./appimagetool-classic
 	chmod +x ./appimagetool-classic
-	APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool-classic \
-		--runtime-file ./runtime-classic \
-		-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
+	if [ "$COMPRESSION" = "xz" ]; then
+		APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" ./appimagetool-classic \
+			--comp xz --runtime-file ./runtime-classic \
+			-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
+	else
+		APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" ./appimagetool-classic \
+			--runtime-file ./runtime-classic \
+			-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
+	fi
 	# appimagetool deja el .zsync en el CWD: se junta con el AppImage para
 	# que el artefacto (path: dist) y el release (*.zsync) lo encuentren.
 	for z in ./*.zsync; do
