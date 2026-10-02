@@ -34,7 +34,33 @@ If you have an ARM-based device, you won't have any problems with the new versio
 
 ## Installation
 
-### Flatpak, Appimage and DMG method:
+### AppImage (Linux)
+
+Download from the [`latest`](https://github.com/Trinity-LA/Trinity-Launcher/releases/tag/latest)
+release for the stable build, or [`nightly`](https://github.com/Trinity-LA/Trinity-Launcher/releases/tag/nightly)
+for the daily one, which is rebuilt from the current code:
+
+| File | Architecture |
+| --- | --- |
+| `Trinity_Launcher-x86_64.AppImage` | x86_64 |
+| `Trinity_Launcher-aarch64.AppImage` | ARM64 |
+
+Make it executable and run it:
+
+```bash
+chmod +x Trinity_Launcher-x86_64.AppImage
+./Trinity_Launcher-x86_64.AppImage
+```
+
+Each AppImage ships its own C library and loader, so the same file works on
+glibc systems, on musl-based ones (Alpine, Void) and on NixOS, with no extra
+dependencies. Both files come with a `.zsync` next to them for resumable
+downloads.
+
+Trinity Launcher is also on [AppImageHub](https://appimage.github.io/), the
+community directory of AppImages.
+
+### Flatpak and DMG method:
 Read [steps for install on linux and mac](https://github.com/Trinity-LA/Trinity-Launcher/releases/tag/2.6-beta)
 
 ### FOR NIXOS USERS 
