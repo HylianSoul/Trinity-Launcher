@@ -1,0 +1,90 @@
+name: AnyLinux Nightly
+
+# Canal diario. Reemplaza al antiguo "Nightly Compilar y Empaquetar
+# AppImage" (nightly.yml), que era un empaquetado linuxdeploy sobre
+# Ubuntu, solo x86_64 y sin zsync fiable. Ahora es el mismo pipeline
+# AnyLinux del canal Latest, con cron.
+#
+# Ver anylinux-latest.yml para el empaquetado (squashfs + runtime
+# estatico) y las reglas del catalogo que cumple.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+# Un tag, un escritor: evita que un run manual se solape con el cron y
+# deje el release a medias.
+concurrency:
+  group: anylinux-nightly
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: "Trinity Nightly (${{ matrix.arch }})"
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runs-on: ubuntu-24.04
+          - arch: aarch64
+            runs-on: ubuntu-24.04-arm
+    # Regla anylinux: compilar SOLO en Arch Linux (Fedora/Ubuntu rompen el deploy)
+    container: ghcr.io/pkgforge-dev/archlinux:latest
+    env:
+      PACKAGER: squashfs
+      OUTNAME: Trinity_Launcher-${{ matrix.arch }}.AppImage
+      CHANNEL: nightly
+
+    steps:
+      - name: Instalar dependencias base
+        run: pacman -Sy --noconfirm git
+
+      - uses: actions/checkout@v4
+
+      - name: Cache ccache + zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ccache
+            .zig-cache
+          key: anylinux-nightly-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: |
+            anylinux-nightly-${{ matrix.arch }}-
+
+      - name: Clonar mcpe-nx
+        run: git clone ${{ secrets.MCPE_NX }} mcpe-nx > /dev/null 2>&1
+
+      - name: Construir AppImage
+        run: |
+          sleep 10 # el runner a veces monta el checkout del commit anterior
+          sh ./trinity-appimage.sh
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trinity_Launcher-${{ matrix.arch }}-nightly
+          path: dist
+
+  release:
+    # Publica lo que haya: si un arch falla, el otro sale igual.
+    if: ${{ !cancelled() }}
+    needs: [build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Trinity_Launcher-*-nightly
+          merge-multiple: true
+
+      - name: Subir a Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          files: |
+            Trinity_Launcher-*.AppImage
+            *.zsync

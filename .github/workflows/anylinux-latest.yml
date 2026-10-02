@@ -1,0 +1,92 @@
+name: AnyLinux Latest
+
+# Canal estable. Reemplaza al antiguo "AnyLinux AppImage (sharun, portable
+# total)", que publicaba solo en `latest` y sin cron (por eso el tag
+# llevaba semanas congelado). Ahora hay un workflow por canal, y el
+# hermano AnyLinux Nightly cubre `nightly`.
+#
+# Que sea "AnyLinux" no significa DwarFS: es el metodo quick-sharun
+# (sharun + glibc y loader propios), empaquetado como SquashFS tipo 2 con
+# runtime estatico. Asi el mismo AppDir portable (glibc + musl + NixOS,
+# ANYLINUX_LIB=0) monta en el test del catalogo appimage.github.io, que
+# rechaza DwarFS. La variante DwarFS se publica aparte en `anylinux-latest`.
+
+on:
+  workflow_dispatch:
+
+# Un tag, un escritor: evita que un run manual se solape con otro y deje
+# el release a medias.
+concurrency:
+  group: anylinux-latest
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: "Trinity Latest (${{ matrix.arch }})"
+    runs-on: ${{ matrix.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runs-on: ubuntu-24.04
+          - arch: aarch64
+            runs-on: ubuntu-24.04-arm
+    # Regla anylinux: compilar SOLO en Arch Linux (Fedora/Ubuntu rompen el deploy)
+    container: ghcr.io/pkgforge-dev/archlinux:latest
+    env:
+      PACKAGER: squashfs
+      OUTNAME: Trinity_Launcher-${{ matrix.arch }}.AppImage
+      CHANNEL: latest
+
+    steps:
+      - name: Instalar dependencias base
+        run: pacman -Sy --noconfirm git
+
+      - uses: actions/checkout@v4
+
+      - name: Cache ccache + zig
+        uses: actions/cache@v4
+        with:
+          path: |
+            .ccache
+            .zig-cache
+          key: anylinux-latest-${{ matrix.arch }}-${{ github.run_id }}
+          restore-keys: |
+            anylinux-latest-${{ matrix.arch }}-
+
+      - name: Clonar mcpe-nx
+        run: git clone ${{ secrets.MCPE_NX }} mcpe-nx > /dev/null 2>&1
+
+      - name: Construir AppImage
+        run: |
+          sleep 10 # el runner a veces monta el checkout del commit anterior
+          sh ./trinity-appimage.sh
+
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trinity_Launcher-${{ matrix.arch }}-latest
+          path: dist
+
+  release:
+    # Publica lo que haya: si un arch falla, el otro sale igual en vez de
+    # bloquear el tag que el catalogo prueba.
+    if: ${{ !cancelled() }}
+    needs: [build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: Trinity_Launcher-*-latest
+          merge-multiple: true
+
+      - name: Subir a Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: |
+            Trinity_Launcher-*.AppImage
+            *.zsync
