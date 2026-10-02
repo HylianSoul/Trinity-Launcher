@@ -410,12 +410,24 @@ if [ "$PACKAGER" = "squashfs" ] ; then
 		"https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-$ARCH.AppImage" \
 		-O ./appimagetool-classic
 	chmod +x ./appimagetool-classic
+	# appimagetool solo acepta ARCH=x86_64|arm|arm_aarch64|i386...: con
+	# ARCH=aarch64 no reconoce nada, escanea el AppDir y muere al ver las
+	# sqlite de Android (x86/arm/arm64) en share/mcpelauncher (ait.c,
+	# extract_arch_from_text: compara contra "arm_aarch64").
+	AI_ARCH="$ARCH"
+	if [ "$ARCH" = "aarch64" ]; then
+		AI_ARCH="arm_aarch64"
+	fi
+	# Bloques de 1M: -33 MB medidos frente a 128K; el runtime monta
+	# cualquier tamano (maximo SquashFS).
 	if [ "$COMPRESSION" = "xz" ]; then
-		APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" ./appimagetool-classic \
-			--comp xz --runtime-file ./runtime-classic \
+		APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$AI_ARCH" ./appimagetool-classic \
+			--comp xz --mksquashfs-opt -b --mksquashfs-opt 1M \
+			--runtime-file ./runtime-classic \
 			-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
 	else
-		APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$ARCH" ./appimagetool-classic \
+		APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$AI_ARCH" ./appimagetool-classic \
+			--mksquashfs-opt -b --mksquashfs-opt 1M \
 			--runtime-file ./runtime-classic \
 			-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
 	fi
