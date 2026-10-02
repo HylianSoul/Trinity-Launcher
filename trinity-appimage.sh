@@ -385,8 +385,10 @@ if [ "$PACKAGER" = "squashfs" ] ; then
 	# binario linkea; fuera del bundle classic (AnyLinux no se toca).
 	rm -f AppDir/lib/libVkLayer_* \
 		AppDir/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
-	# Compresor: xz en latest (payload 203 -> 154 MB medido), gzip en
-	# nightly (empaqueta mas rapido). Solo gzip y xz los monta el runtime.
+	# Compresor: gzip SIEMPRE. xz comprime mas pero el montador del
+	# catalogo (squashfuse viejo) solo soporta zlib/zstd y rechaza la
+	# imagen ("supports only zlib, zstd"); la probo el juez en 2026-10-02.
+	# Bloques de 1M: mejor ratio sin cambiar el descompresor necesario.
 	COMPRESSION="${COMPRESSION:-}"
 	if [ -z "$COMPRESSION" ]; then
 		if [ "$CHANNEL" = "latest" ]; then
@@ -420,17 +422,10 @@ if [ "$PACKAGER" = "squashfs" ] ; then
 	fi
 	# Bloques de 1M: -33 MB medidos frente a 128K; el runtime monta
 	# cualquier tamano (maximo SquashFS).
-	if [ "$COMPRESSION" = "xz" ]; then
-		APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$AI_ARCH" ./appimagetool-classic \
-			--comp xz --mksquashfs-opt -b --mksquashfs-opt 1M \
-			--runtime-file ./runtime-classic \
-			-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
-	else
-		APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$AI_ARCH" ./appimagetool-classic \
-			--mksquashfs-opt -b --mksquashfs-opt 1M \
-			--runtime-file ./runtime-classic \
-			-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
-	fi
+	APPIMAGE_EXTRACT_AND_RUN=1 ARCH="$AI_ARCH" ./appimagetool-classic \
+		--mksquashfs-opt -b --mksquashfs-opt 1M \
+		--runtime-file ./runtime-classic \
+		-u "$UPINFO" AppDir "$OUTPATH/$OUTNAME"
 	# appimagetool deja el .zsync en el CWD: se junta con el AppImage para
 	# que el artefacto (path: dist) y el release (*.zsync) lo encuentren.
 	for z in ./*.zsync; do

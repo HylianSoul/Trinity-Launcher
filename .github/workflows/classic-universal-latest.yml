@@ -8,8 +8,9 @@ name: Classic Universal (catalogo + musl/glibc)
 #
 # Reglas del catalogo que cumple: una sola x86_64 por tag, nombre sin
 # version/nightly/debug, update-info + .zsync, icono, .DirIcon,
-# desktop-file-validate, X11 forzado, runtime tipo 2 estatico
-# (Self-Contained=true) y xz en latest (payload 203 -> 154 MB).
+# desktop-file-validate, X11 forzado y runtime tipo 2 estatico
+# (Self-Contained=true). Compresor gzip: el montador del catalogo solo
+# soporta zlib/zstd (xz verificado incompatible en 2026-10-02).
 #
 # Un solo workflow para los dos canales (antes habia dos que escribian el
 # mismo tag nightly-classic a la misma hora): schedule -> nightly,
