@@ -76,29 +76,50 @@ jobs:
           patch_one() {
             S=$1
             grep -q 'mcpelauncher-client.real' "$S" && return 0
-            grep -Eq '(make-appimage|make_appimage|appimagetool|mksquashfs|dwfs)' "$S" || return 1
+            grep -Eqi '(make-appimage|make_appimage|appimagetool|mksquashfs|dwfs)' "$S" || return 1
             cp "$S" "$S.bak"
             N=$(mktemp)
+            INS=0
+            CONT=0
             while IFS= read -r L; do
+              if [ "$CONT" -eq 0 ]; then
+                LL=${L,,}
+                case "$LL" in
+                  *make-appimage*|*make_appimage*|*appimagetool*|*mksquashfs*|*dwfs*)
+                    cat trinity-fix.snippet
+                    INS=$((INS+1))
+                    ;;
+                esac
+              fi
               case "$L" in
-                *make-appimage*|*make_appimage*|*appimagetool*|*mksquashfs*|*dwfs*) cat trinity-fix.snippet ;;
+                *\\|*'&&'|*'||'|*'|'|*then|*else|*do) CONT=1 ;;
+                *) CONT=0 ;;
               esac
               printf '%s\n' "$L"
             done < "$S.bak" > "$N"
+            if [ "$INS" -eq 0 ]; then
+              echo "::warning::$S: anclas solo dentro de comandos multilinea, no se inserto"
+              return 1
+            fi
             mv "$N" "$S"
             if ! sh -n "$S"; then
               echo "::error::parcheo rompio la sintaxis de $S"
               cp "$S.bak" "$S"
               exit 1
             fi
-            echo "trinity-fix: parcheado $S"
+            echo "trinity-fix: $S parcheado ($INS inserciones)"
           }
 
-          patch_one trinity-appimage.sh || { echo "::error::no se encontro ancla de empaquetado en trinity-appimage.sh"; exit 1; }
-          for EXTRA in quick-sharun.sh */quick-sharun.sh; do
-            [ -f "$EXTRA" ] || continue
-            patch_one "$EXTRA" || true
+          PATCHED=0
+          for TARGET in trinity-appimage.sh quick-sharun.sh */quick-sharun.sh; do
+            [ -f "$TARGET" ] || continue
+            if patch_one "$TARGET"; then
+              PATCHED=$((PATCHED+1))
+            else
+              echo "::warning::sin parche para $TARGET"
+            fi
           done
+          [ "$PATCHED" -gt 0 ] || { echo "::error::ningun script de empaquetado parcheado"; exit 1; }
 
       - run: |
           sleep 10
