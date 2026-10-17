@@ -41,6 +41,19 @@ jobs:
           repository: 'minecraft-linux/mcpelauncher-mac-bin'
           path: 'mac-bin'
 
+      - name: Clonar mcpe-nx (repo privado vía secret MCPE_NX)
+        env:
+          MCPE_NX_REPO: ${{ secrets.MCPE_NX }}
+        run: |
+          if [ -z "$MCPE_NX_REPO" ]; then
+            echo "::error::El secret MCPE_NX no está configurado (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          echo "=== Clonando mcpe-nx desde el secret MCPE_NX ==="
+          git clone --quiet "$MCPE_NX_REPO" mcpe-nx
+          echo "=== Contenido de mcpe-nx ==="
+          ls -la mcpe-nx
+
       - name: Preparar ANGLE (ARM64)
         run: |
           mkdir -p external_libs/angle_extracted
@@ -375,6 +388,19 @@ jobs:
         with:
           repository: "minecraft-linux/mcpelauncher-mac-bin"
           path: "mac-bin"
+
+      - name: Clonar mcpe-nx (repo privado vía secret MCPE_NX)
+        env:
+          MCPE_NX_REPO: ${{ secrets.MCPE_NX }}
+        run: |
+          if [ -z "$MCPE_NX_REPO" ]; then
+            echo "::error::El secret MCPE_NX no está configurado (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          echo "=== Clonando mcpe-nx desde el secret MCPE_NX ==="
+          git clone --quiet "$MCPE_NX_REPO" mcpe-nx
+          echo "=== Contenido de mcpe-nx ==="
+          ls -la mcpe-nx
 
       - name: Preparar ANGLE (x86_64)
         run: |
