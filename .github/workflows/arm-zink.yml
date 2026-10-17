@@ -33,6 +33,19 @@ jobs:
           repository: 'minecraft-linux/mcpelauncher-mac-bin'
           path: 'mac-bin'
 
+      - name: Clonar mcpe-nx (repo privado via secret MCPE_NX)
+        env:
+          MCPE_NX_REPO: ${{ secrets.MCPE_NX }}
+        run: |
+          if [ -z "$MCPE_NX_REPO" ]; then
+            echo "::error::El secret MCPE_NX no esta configurado (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          echo "=== Clonando mcpe-nx desde el secret MCPE_NX ==="
+          git clone --quiet "$MCPE_NX_REPO" mcpe-nx
+          echo "=== Contenido de mcpe-nx ==="
+          ls -la mcpe-nx
+
       - name: Instalar dependencias de Homebrew (ARM64)
         run: |
           brew update
