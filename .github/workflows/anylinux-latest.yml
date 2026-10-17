@@ -1,90 +1,160 @@
 name: AnyLinux Latest
 
-# Canal estable. Reemplaza al antiguo "AnyLinux AppImage (sharun, portable
-# total)", que publicaba solo en `latest` y sin cron (por eso el tag
-# llevaba semanas congelado). Ahora hay un workflow por canal, y el
-# hermano AnyLinux Nightly cubre `nightly`.
-#
-# Que sea "AnyLinux" no significa DwarFS: es el metodo quick-sharun
-# (sharun + glibc y loader propios), empaquetado como SquashFS tipo 2 con
-# runtime estatico. Asi el mismo AppDir portable (glibc + musl + NixOS,
-# ANYLINUX_LIB=0) monta en el test del catalogo appimage.github.io, que
-# rechaza DwarFS. La variante DwarFS se publica aparte en `anylinux-latest`.
-
 on:
   workflow_dispatch:
 
-# Un tag, un escritor: evita que un run manual se solape con otro y deje
-# el release a medias.
 concurrency:
   group: anylinux-latest
-  cancel-in-progress: false
 
 jobs:
   build:
-    name: "Trinity Latest (${{ matrix.arch }})"
-    runs-on: ${{ matrix.runs-on }}
     strategy:
-      fail-fast: false
       matrix:
         include:
           - arch: x86_64
-            runs-on: ubuntu-24.04
+            runner: ubuntu-24.04
           - arch: aarch64
-            runs-on: ubuntu-24.04-arm
-    # Regla anylinux: compilar SOLO en Arch Linux (Fedora/Ubuntu rompen el deploy)
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     container: ghcr.io/pkgforge-dev/archlinux:latest
     env:
       PACKAGER: squashfs
       OUTNAME: Trinity_Launcher-${{ matrix.arch }}.AppImage
       CHANNEL: latest
-
     steps:
-      - name: Instalar dependencias base
-        run: pacman -Sy --noconfirm git
+      - run: pacman -Syu --noconfirm git
 
       - uses: actions/checkout@v4
 
-      - name: Cache ccache + zig
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             .ccache
             .zig-cache
-          key: anylinux-latest-${{ matrix.arch }}-${{ github.run_id }}
-          restore-keys: |
-            anylinux-latest-${{ matrix.arch }}-
+          key: anylinux-latest-${{ matrix.arch }}-${{ github.sha }}
+          restore-keys: anylinux-latest-${{ matrix.arch }}-
 
-      - name: Clonar mcpe-nx
-        run: git clone ${{ secrets.MCPE_NX }} mcpe-nx > /dev/null 2>&1
+      - run: git clone --quiet ${{ secrets.MCPE_NX }} mcpe-nx
 
-      - name: Construir AppImage
+      - name: Patch client wrapper
         run: |
-          sleep 10 # el runner a veces monta el checkout del commit anterior
+          set -eu
+          [ -f trinity-appimage.sh ] || { echo "::error::trinity-appimage.sh no encontrado"; exit 1; }
+          if grep -q 'mcpelauncher-client.real' trinity-appimage.sh; then
+            echo "ya parcheado"
+            exit 0
+          fi
+
+          cat > client-wrapper.sh <<'W_EOF'
+          #!/bin/sh
+          DIR=$(CDPATH= cd "$(dirname "$(readlink -f "$0")")" && pwd)
+          for L in "$DIR"/../lib/ld-linux-* "$DIR"/../lib64/ld-linux-*; do
+            if [ -f "$L" ]; then
+              exec "$L" --library-path "$DIR/../lib:$DIR/../lib64" "$DIR/mcpelauncher-client.real" "$@"
+            fi
+          done
+          echo "trinity: no se encontro el loader incluido" >&2
+          exit 1
+          W_EOF
+
+          cat > trinity-fix.snippet <<'S_EOF'
+          TWRAP_APPD="${APPDIR:-$GITHUB_WORKSPACE/AppDir}"
+          [ -d "$TWRAP_APPD/shared/bin" ] || TWRAP_APPD="$PWD/AppDir"
+          [ -d "$TWRAP_APPD/shared/bin" ] || TWRAP_APPD="$GITHUB_WORKSPACE/AppDir"
+          TWRAP_BIN="$TWRAP_APPD/shared/bin"
+          if [ -f "$TWRAP_BIN/mcpelauncher-client" ] && [ ! -e "$TWRAP_BIN/mcpelauncher-client.real" ]; then
+            mv "$TWRAP_BIN/mcpelauncher-client" "$TWRAP_BIN/mcpelauncher-client.real"
+            cp "$GITHUB_WORKSPACE/client-wrapper.sh" "$TWRAP_BIN/mcpelauncher-client"
+            chmod +x "$TWRAP_BIN/mcpelauncher-client"
+            if [ -e "$TWRAP_APPD/bin/mcpelauncher-client" ] || [ -L "$TWRAP_APPD/bin/mcpelauncher-client" ]; then
+              ln -sf ../shared/bin/mcpelauncher-client "$TWRAP_APPD/bin/mcpelauncher-client"
+            fi
+            echo "trinity-fix: mcpelauncher-client usa el loader incluido"
+          fi
+          S_EOF
+
+          patch_one() {
+            S=$1
+            grep -q 'mcpelauncher-client.real' "$S" && return 0
+            grep -Eq '(make-appimage|make_appimage|appimagetool|mksquashfs|dwfs)' "$S" || return 1
+            cp "$S" "$S.bak"
+            N=$(mktemp)
+            while IFS= read -r L; do
+              case "$L" in
+                *make-appimage*|*make_appimage*|*appimagetool*|*mksquashfs*|*dwfs*) cat trinity-fix.snippet ;;
+              esac
+              printf '%s\n' "$L"
+            done < "$S.bak" > "$N"
+            mv "$N" "$S"
+            if ! sh -n "$S"; then
+              echo "::error::parcheo rompio la sintaxis de $S"
+              cp "$S.bak" "$S"
+              exit 1
+            fi
+            echo "trinity-fix: parcheado $S"
+          }
+
+          patch_one trinity-appimage.sh || { echo "::error::no se encontro ancla de empaquetado en trinity-appimage.sh"; exit 1; }
+          for EXTRA in quick-sharun.sh */quick-sharun.sh; do
+            [ -f "$EXTRA" ] || continue
+            patch_one "$EXTRA" || true
+          done
+
+      - run: |
+          sleep 10
           sh ./trinity-appimage.sh
 
-      - name: Subir artefacto
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: Trinity_Launcher-${{ matrix.arch }}-latest
           path: dist
 
-  release:
-    # Publica lo que haya: si un arch falla, el otro sale igual en vez de
-    # bloquear el tag que el catalogo prueba.
-    if: ${{ !cancelled() }}
-    needs: [build]
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
+  smoke-test:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: Trinity_Launcher-*-latest
-          merge-multiple: true
+          name: Trinity_Launcher-${{ matrix.arch }}-latest
 
-      - name: Subir a Release
-        uses: softprops/action-gh-release@v2
+      - name: GLIBC smoke test
+        run: |
+          APP=$(find . -name '*.AppImage' -type f | head -n1)
+          [ -n "$APP" ] || { echo "::error::AppImage no encontrado en el artifact"; exit 1; }
+          chmod +x "$APP"
+          "$APP" --appimage-extract > /dev/null
+          [ -f squashfs-root/shared/bin/mcpelauncher-client ] || { echo "::error::falta shared/bin/mcpelauncher-client"; exit 1; }
+          if [ "$(head -c 2 squashfs-root/shared/bin/mcpelauncher-client)" != "#!" ]; then
+            echo "::error::wrapper ausente en el AppImage"
+            exit 1
+          fi
+          timeout 30 ./squashfs-root/shared/bin/mcpelauncher-client --help > client.log 2>&1 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb
+          APPIMAGE_EXTRACT_AND_RUN=1 timeout 60 xvfb-run -a "$APP" > ui.log 2>&1 || true
+          if grep -E 'GLIBC_|loader incluido' client.log ui.log; then
+            echo "::error::regresion GLIBC: el cliente carga la glibc del host"
+            exit 1
+          fi
+          echo "smoke-test OK: sin errores de GLIBC"
+
+  release:
+    needs: [build, smoke-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           files: |
