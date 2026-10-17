@@ -121,6 +121,23 @@ jobs:
           mkdir -p AppDir/usr/lib32
           cp -a 32bitmcpe/lib32/* AppDir/usr/lib32/
 
+          # Envolver el cliente 32 bits para que sea autocontenido:
+          # usa el loader (ld-linux.so.2) incluido en lib32 si existe,
+          # igual que el patron del workflow AnyLinux
+          mv AppDir/usr/bin/mcpelauncher-client86 AppDir/usr/bin/mcpelauncher-client86.real
+          cat > AppDir/usr/bin/mcpelauncher-client86 <<'W86_EOF'
+          #!/bin/sh
+          DIR=$(CDPATH= cd "$(dirname "$(readlink -f "$0")")" && pwd)
+          for L in "$DIR/../lib32/ld-linux.so.2" "$DIR/../lib/ld-linux.so.2"; do
+            if [ -f "$L" ]; then
+              exec "$L" --library-path "$DIR/../lib32:$DIR/../lib" "$DIR/mcpelauncher-client86.real" "$@"
+            fi
+          done
+          echo "trinity: ld-linux.so.2 no incluido en lib32, intentando ejecucion directa" >&2
+          exec "$DIR/mcpelauncher-client86.real" "$@"
+          W86_EOF
+          chmod +x AppDir/usr/bin/mcpelauncher-client86
+
           mkdir -p AppDir/usr/lib
           wget https://huggingface.co/datasets/ccoffee20/PEPE/resolve/main/libevdev.so.2 -O AppDir/usr/lib/libevdev.so.2
 
@@ -130,9 +147,19 @@ jobs:
 
           cp /usr/lib/x86_64-linux-gnu/libminizip.so.* AppDir/usr/lib/ 2>/dev/null || true
 
+          # Desplegar dependencias SOLO de los ELF x86_64 reales.
+          # El cliente 32 bits y los recursos precompilados se omiten:
+          # linuxdeploy no puede resolver librerias i386 (solo hay libs
+          # x86_64 en el runner) y las deps de client86 ya vienen en lib32.
+          DD_ARGS=()
+          for BIN in trinity mcpelauncher-client mcpelauncher-extract msa-daemon msa-ui-qt; do
+            [ -f "AppDir/usr/bin/$BIN" ] && DD_ARGS+=(--deploy-deps-only "AppDir/usr/bin/$BIN")
+          done
+
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
             --appdir AppDir \
             -e AppDir/usr/bin/trinity \
+            "${DD_ARGS[@]}" \
             -d trinity/resources/shortcuts/com.trench.trinity.launcher.desktop \
             -i trinity/resources/branding/com.trench.trinity.launcher.svg \
             --plugin qt \
