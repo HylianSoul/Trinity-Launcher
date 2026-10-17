@@ -1,6 +1,8 @@
-name: (MAC ARM64 Nativo con Zink y Wrapper C) Compilar y Empaquetar para macOS
+name: "(MAC ARM64 Nativo con Zink y Wrapper C) Compilar y Empaquetar para macOS"
+
 on:
   workflow_dispatch:
+
 env:
   MESA_PREFIX: ${{ github.workspace }}/mesa-native
 
@@ -25,7 +27,7 @@ jobs:
       - name: Clonar mcpe-extract (Codeberg)
         run: git clone https://codeberg.org/javiercplus/mcpe-extract.git
 
-      - name: Clonar mcpelauncher-mac-bin (Librerías puente)
+      - name: Clonar mcpelauncher-mac-bin (Librerias puente)
         uses: actions/checkout@v4
         with:
           repository: 'minecraft-linux/mcpelauncher-mac-bin'
@@ -53,7 +55,7 @@ jobs:
           curl -L -o mesa-native-macos.zip https://huggingface.co/datasets/ccoffee20/macos/resolve/main/mesa-native-macos.zip
 
           echo "=== Extrayendo Mesa en ${MESA_PREFIX} ==="
-          unzip -q mesa-native-macos.zip -d ${MESA_PREFIX}
+          unzip -q mesa-native-macos.zip -d "${MESA_PREFIX}"
 
       - name: Clonar y compilar GLFW
         run: |
@@ -183,7 +185,7 @@ jobs:
               char bin_path[PATH_MAX];
               snprintf(bin_path, sizeof(bin_path), "%s/trinity-bin", dir);
 
-              // Variables específicas de Zink / Mesa
+              // Variables especificas de Zink / Mesa
               setenv("MESA_GL_VERSION_OVERRIDE", "4.6", 1);
               setenv("MESA_GLSL_VERSION_OVERRIDE", "460", 1);
               setenv("MESA_KK_DISABLE_WORKAROUNDS", "shader_cache", 1);
@@ -207,7 +209,7 @@ jobs:
               snprintf(msa_path, sizeof(msa_path), "%s/msa-daemon", dir);
               setenv("MSA_DAEMON_PATH", msa_path, 1);
 
-              // Configurar DYLD_LIBRARY_PATH para incluir Frameworks y librerías puente
+              // Configurar DYLD_LIBRARY_PATH para incluir Frameworks y librerias puente
               char lib_path[PATH_MAX * 2];
               snprintf(lib_path, sizeof(lib_path), "%s/Frameworks:%s/Resources/mcpelauncher/lib/native/arm64",
                        bundle_root, bundle_root);
@@ -281,17 +283,17 @@ jobs:
 
           chmod +x dist/Trinity.app/Contents/MacOS/trinity
 
-          # Copiar librerías de Mesa a Frameworks
+          # Copiar librerias de Mesa a Frameworks
           cp -R ${{ env.MESA_PREFIX }}/lib/*.dylib dist/Trinity.app/Contents/Frameworks/ 2>/dev/null || true
 
           # Copiar JSON de Vulkan ICD a Resources
           cp ${{ env.MESA_PREFIX }}/share/vulkan/icd.d/*.json dist/Trinity.app/Contents/Resources/vulkan/icd.d/ 2>/dev/null || true
 
-          # Copiar estructura de librerías puente (mcpelauncher-mac-bin)
+          # Copiar estructura de librerias puente (mcpelauncher-mac-bin)
           cp -R mac-bin/lib dist/Trinity.app/Contents/Resources/mcpelauncher/
 
           # Crear Info.plist (el ejecutable principal es el wrapper "trinity")
-          cat <<EOF > dist/Trinity.app/Contents/Info.plist
+          cat << 'PLIST_EOF' > dist/Trinity.app/Contents/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
@@ -318,14 +320,14 @@ jobs:
               <string>????</string>
           </dict>
           </plist>
-          EOF
+          PLIST_EOF
 
-          # Copiar ícono (si existe)
+          # Copiar icono (si existe)
           cp trinity/resources/branding/com.trench.trinity.launcher.icns dist/Trinity.app/Contents/Resources/AppIcon.icns 2>/dev/null || true
 
       - name: macdeployqt y codesign
         run: |
-          # Crear enlaces simbólicos para que macdeployqt encuentre frameworks adicionales de Qt
+          # Crear enlaces simbolicos para que macdeployqt encuentre frameworks adicionales de Qt
           mkdir -p dist/lib
           ln -s /opt/homebrew/opt/qt@6/lib/QtSvg.framework dist/lib/ || true
           ln -s /opt/homebrew/opt/qt@6/lib/QtVirtualKeyboard.framework dist/lib/ || true
@@ -341,7 +343,7 @@ jobs:
             -libpath=/opt/homebrew/opt/qt@6/lib \
             -verbose=1
 
-          # Añadir rpath adicional para asegurar carga de Frameworks
+          # Anadir rpath adicional para asegurar carga de Frameworks
           install_name_tool -add_rpath @loader_path/../Frameworks Trinity.app/Contents/MacOS/trinity-bin 2>/dev/null || true
           install_name_tool -add_rpath @loader_path/../Frameworks Trinity.app/Contents/MacOS/mcpelauncher-client 2>/dev/null || true
           install_name_tool -add_rpath @loader_path/../Frameworks Trinity.app/Contents/MacOS/msa-daemon 2>/dev/null || true
@@ -353,19 +355,29 @@ jobs:
 
           # Crear DMG
           hdiutil create -volname "Trinity Launcher" -srcfolder Trinity.app -ov -format UDZO Trinity.dmg
-          mv Trinity.dmg Trinity-arm64-zink-beta-macosx.dmg 
-          
+          mv Trinity.dmg Trinity-arm64-zink-beta-macosx.dmg
+
+      - name: Subir artefacto DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Trinity-arm64-zink-beta-macosx
+          path: dist/Trinity-arm64-zink-beta-macosx.dmg
+          if-no-files-found: error
+          retention-days: 7
+
   release:
-    needs: [build, smoke-test]
+    needs: build-and-package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Descargar artefactos compilados
+        uses: actions/download-artifact@v4
         with:
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+
+      - name: Publicar en GitHub Releases
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          files: |
-            Trinity-arm64-zink-beta-macosx.dmg 
+          files: Trinity-arm64-zink-beta-macosx.dmg
