@@ -3,6 +3,9 @@ name: QT5 - SSE3 Compilar y Empaquetar AppImage
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-and-package:
     runs-on: ubuntu-latest
@@ -19,6 +22,19 @@ jobs:
           git clone --recursive https://github.com/minecraft-linux/msa-manifest.git msa
           git clone https://codeberg.org/javiercplus/mcpe-extract.git
           git clone https://github.com/minecraft-linux/mcpelauncher-linux-bin.git linux-bin
+
+      - name: Clonar mcpe-nx (repo privado vía secret MCPE_NX)
+        env:
+          MCPE_NX_REPO: ${{ secrets.MCPE_NX }}
+        run: |
+          if [ -z "$MCPE_NX_REPO" ]; then
+            echo "::error::El secret MCPE_NX no está configurado (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+          echo "=== Clonando mcpe-nx desde el secret MCPE_NX ==="
+          git clone --quiet "$MCPE_NX_REPO" mcpe-nx
+          echo "=== Contenido de mcpe-nx ==="
+          ls -la mcpe-nx
 
       - name: Instalar Dependencias del Sistema
         run: |
@@ -90,10 +106,10 @@ jobs:
           chmod +x AppDir/usr/bin/mcpelauncher-client86
           cp mcpelauncher/build/mcpelauncher-client/mcpelauncher-client AppDir/usr/bin/
           cp mcpe-extract/build/mcpelauncher-extract AppDir/usr/bin/
-          
+
           # Copia del binario de Trinity Launcher
           cp trinity/build/app/trinity AppDir/usr/bin/ || cp trinity/build/trinity AppDir/usr/bin/
-          
+
           find msa/build -type f -name "msa-daemon" -exec cp {} AppDir/usr/bin/ \;
           find msa/build -type f -name "msa-ui-qt" -exec cp {} AppDir/usr/bin/ \;
           cp -r linux-bin/* AppDir/usr/share/mcpelauncher/
@@ -104,14 +120,14 @@ jobs:
           cp 32bitmcpe/bin/mcpelauncher-client86 AppDir/usr/bin/
           mkdir -p AppDir/usr/lib32
           cp -a 32bitmcpe/lib32/* AppDir/usr/lib32/
-          
+
           mkdir -p AppDir/usr/lib
           wget https://huggingface.co/datasets/ccoffee20/PEPE/resolve/main/libevdev.so.2 -O AppDir/usr/lib/libevdev.so.2
-          
+
           LIBZIP_SRC=$(ls /usr/lib/x86_64-linux-gnu/libzip.so.* | head -n 1)
           echo "Copiando libzip desde: $LIBZIP_SRC"
           cp "$LIBZIP_SRC" AppDir/usr/lib/libzip.so.5
-          
+
           cp /usr/lib/x86_64-linux-gnu/libminizip.so.* AppDir/usr/lib/ 2>/dev/null || true
 
           ./linuxdeploy-x86_64.AppImage --appimage-extract-and-run \
