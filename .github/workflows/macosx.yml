@@ -181,17 +181,14 @@ jobs:
           # 4. Configurar rpaths de ANGLE y MoltenVK
           ANGLE_DIR="dist/Trinity.app/Contents/Frameworks/mvk-angle"
           
-          # Configurar install names para usar @rpath
           install_name_tool -id "@rpath/libEGL.dylib" "$ANGLE_DIR/libEGL.dylib"
           install_name_tool -id "@rpath/libGLESv2.dylib" "$ANGLE_DIR/libGLESv2.dylib"
           install_name_tool -id "@rpath/libMoltenVK.dylib" "$ANGLE_DIR/libMoltenVK.dylib"
           
-          # Agregar rpath a las librerías para que puedan encontrarse mutuamente
           install_name_tool -add_rpath "@loader_path" "$ANGLE_DIR/libEGL.dylib"
           install_name_tool -add_rpath "@loader_path" "$ANGLE_DIR/libGLESv2.dylib"
           install_name_tool -add_rpath "@loader_path" "$ANGLE_DIR/libMoltenVK.dylib"
           
-          # Corregir MoltenVK_icd.json para que apunte a la ruta correcta
           cat > "$ANGLE_DIR/MoltenVK_icd.json" << 'EOF'
           {
               "file_format_version" : "1.0.0",
@@ -202,7 +199,7 @@ jobs:
           }
           EOF
           
-          # 5. Crear Info.plist TEMPORAL apuntando a trinity-bin para que macdeployqt lo analice
+          # 5. Crear Info.plist TEMPORAL
           cat <<EOF > dist/Trinity.app/Contents/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -242,7 +239,7 @@ jobs:
           cp mac-bin/lib/native/arm64-v8a/libfmod*.dylib dist/Trinity.app/Contents/Resources/mcpelauncher/lib/native/arm64-v8a/
           cp mac-bin/lib/arm64-v8a/*.so dist/Trinity.app/Contents/Resources/mcpelauncher/lib/arm64-v8a/
           
-          # 8. Crear launcher en C CORREGIDO
+          # 8. Crear launcher en C
           cat << 'EOF' > trinity_launcher.c
           #include <stdio.h>
           #include <stdlib.h>
@@ -261,19 +258,14 @@ jobs:
               }
               
               char *dir = dirname(exec_path);
-              
               char trinity_bin_path[MAXPATHLEN];
               snprintf(trinity_bin_path, sizeof(trinity_bin_path), "%s/trinity-bin", dir);
-              
               char bundle_path[MAXPATHLEN];
               snprintf(bundle_path, sizeof(bundle_path), "%s/../..", dir);
               
-              // CORREGIDO: Usar vulkan en lugar de metal
               setenv("ANGLE_DEFAULT_PLATFORM", "vulkan", 1);
               setenv("QT_MAC_WANTS_LAYER", "1", 1);
               setenv("QT_AUTO_SCREEN_SCALE_FACTOR", "1", 1);
-              
-              // NUEVO: ANGLE feature overrides para evitar artefactos de renderizado
               setenv("ANGLE_FEATURE_OVERRIDES_DISABLED", "hasCheapRenderPass", 1);
               setenv("ANGLE_FEATURE_OVERRIDES_ENABLED", "flushAfterStreamVertexData:forceRobustResourceInit:allowClearForRobustResourceInit:preferDrawClearOverVkCmdClearAttachments", 1);
               setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "1", 1);
@@ -282,7 +274,6 @@ jobs:
               snprintf(resources_path, sizeof(resources_path), "%s/Resources/mcpelauncher", bundle_path);
               setenv("MCPELAUNCHER_RESOURCES", resources_path, 1);
               
-              // NUEVO: Configurar VK_DRIVER_FILES para MoltenVK
               char vk_driver_path[MAXPATHLEN];
               snprintf(vk_driver_path, sizeof(vk_driver_path), "%s/Frameworks/mvk-angle/MoltenVK_icd.json", bundle_path);
               setenv("VK_DRIVER_FILES", vk_driver_path, 1);
@@ -314,35 +305,10 @@ jobs:
           }
           EOF
           
-          # 9. Compilar el launcher en C
           clang -arch arm64 -mmacosx-version-min=11.0 -O2 -o dist/Trinity.app/Contents/MacOS/trinity trinity_launcher.c
-          
-          # 10. Actualizar Info.plist para que apunte al launcher
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable trinity" dist/Trinity.app/Contents/Info.plist
-          
-          # 11. Copiar icono
           cp trinity/resources/branding/com.trench.trinity.launcher.icns dist/Trinity.app/Contents/Resources/AppIcon.icns
           
-          # 12. Verificar configuración de ANGLE
-          echo "=== Verificando estructura del bundle ==="
-          ls -la dist/Trinity.app/Contents/Frameworks/mvk-angle/
-          
-          echo -e "\n=== Verificando MoltenVK_icd.json ==="
-          cat dist/Trinity.app/Contents/Frameworks/mvk-angle/MoltenVK_icd.json
-          
-          echo -e "\n=== Verificando símbolos en libGLESv2.dylib ==="
-          nm -gU dist/Trinity.app/Contents/Frameworks/mvk-angle/libGLESv2.dylib | grep -E "glBindRenderbuffer|eglGetDisplay" || echo "ADVERTENCIA: Símbolos GL ES no encontrados"
-          
-          echo -e "\n=== Verificando dependencias de libEGL.dylib ==="
-          otool -L dist/Trinity.app/Contents/Frameworks/mvk-angle/libEGL.dylib
-          
-          echo -e "\n=== Verificando dependencias de libGLESv2.dylib ==="
-          otool -L dist/Trinity.app/Contents/Frameworks/mvk-angle/libGLESv2.dylib
-          
-          echo -e "\n=== Verificando dependencias de libMoltenVK.dylib ==="
-          otool -L dist/Trinity.app/Contents/Frameworks/mvk-angle/libMoltenVK.dylib
-          
-          # 13. Limpiar atributos extendidos y firmar
           xattr -cr dist/Trinity.app
           cd dist
           codesign --force --deep --sign - --timestamp=none Trinity.app
@@ -495,12 +461,10 @@ jobs:
           mkdir -p dist/Trinity.app/Contents/Resources/mcpelauncher/lib/x86_64
           mkdir -p dist/Trinity.app/Contents/Frameworks/mvk-angle
           
-          # 1. Copiar binarios
           cp mcpelauncher/build/mcpelauncher-client/mcpelauncher-client dist/Trinity.app/Contents/MacOS/
           cp mcpe-extract/build/mcpelauncher-extract dist/Trinity.app/Contents/MacOS/
           cp trinity/build/app/trinity dist/Trinity.app/Contents/MacOS/trinity-bin
           
-          # 2. Modificar rpaths
           cd dist/Trinity.app/Contents/MacOS
           for BINARY in trinity-bin mcpelauncher-client mcpelauncher-extract; do
             if [ -f "$BINARY" ]; then
@@ -516,26 +480,21 @@ jobs:
           done
           cd ../../../..
           
-          # 3. Copiar ANGLE (Solo archivos necesarios)
           find external_libs/angle_extracted -name "libEGL.dylib" -exec cp {} dist/Trinity.app/Contents/Frameworks/mvk-angle/ \;
           find external_libs/angle_extracted -name "libGLESv2.dylib" -exec cp {} dist/Trinity.app/Contents/Frameworks/mvk-angle/ \;
           find external_libs/angle_extracted -name "libMoltenVK.dylib" -exec cp {} dist/Trinity.app/Contents/Frameworks/mvk-angle/ \;
           find external_libs/angle_extracted -name "MoltenVK_icd.json" -exec cp {} dist/Trinity.app/Contents/Frameworks/mvk-angle/ \;
           
-          # 4. Configurar rpaths de ANGLE y MoltenVK
           ANGLE_DIR="dist/Trinity.app/Contents/Frameworks/mvk-angle"
           
-          # Configurar install names para usar @rpath
           install_name_tool -id "@rpath/libEGL.dylib" "$ANGLE_DIR/libEGL.dylib"
           install_name_tool -id "@rpath/libGLESv2.dylib" "$ANGLE_DIR/libGLESv2.dylib"
           install_name_tool -id "@rpath/libMoltenVK.dylib" "$ANGLE_DIR/libMoltenVK.dylib"
           
-          # Agregar rpath a las librerías para que puedan encontrarse mutuamente
           install_name_tool -add_rpath "@loader_path" "$ANGLE_DIR/libEGL.dylib"
           install_name_tool -add_rpath "@loader_path" "$ANGLE_DIR/libGLESv2.dylib"
           install_name_tool -add_rpath "@loader_path" "$ANGLE_DIR/libMoltenVK.dylib"
           
-          # Corregir MoltenVK_icd.json para que apunte a la ruta correcta
           cat > "$ANGLE_DIR/MoltenVK_icd.json" << 'EOF'
           {
               "file_format_version" : "1.0.0",
@@ -545,8 +504,7 @@ jobs:
               }
           }
           EOF
-                    
-          # 5. Crear Info.plist TEMPORAL
+          
           cat <<EOF > dist/Trinity.app/Contents/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -574,7 +532,6 @@ jobs:
           </plist>
           EOF
           
-          # 6. Ejecutar macdeployqt
           cd dist
           $(brew --prefix qt@6)/bin/macdeployqt Trinity.app \
             -executable=Trinity.app/Contents/MacOS/mcpelauncher-client \
@@ -582,11 +539,9 @@ jobs:
             -always-overwrite -verbose=1
           cd ..
           
-          # 7. Copiar librerías de mac-bin
           cp mac-bin/lib/native/x86_64/libfmod*.dylib dist/Trinity.app/Contents/Resources/mcpelauncher/lib/native/x86_64/
           cp mac-bin/lib/x86_64/*.so dist/Trinity.app/Contents/Resources/mcpelauncher/lib/x86_64/
           
-          # 8. Crear launcher en C CORREGIDO (idéntico al de ARM64)
           cat << 'EOF' > trinity_launcher.c
           #include <stdio.h>
           #include <stdlib.h>
@@ -605,19 +560,14 @@ jobs:
               }
               
               char *dir = dirname(exec_path);
-              
               char trinity_bin_path[MAXPATHLEN];
               snprintf(trinity_bin_path, sizeof(trinity_bin_path), "%s/trinity-bin", dir);
-              
               char bundle_path[MAXPATHLEN];
               snprintf(bundle_path, sizeof(bundle_path), "%s/../..", dir);
               
-              // CORREGIDO: Usar vulkan en lugar de metal
               setenv("ANGLE_DEFAULT_PLATFORM", "vulkan", 1);
               setenv("QT_MAC_WANTS_LAYER", "1", 1);
               setenv("QT_AUTO_SCREEN_SCALE_FACTOR", "1", 1);
-              
-              // NUEVO: ANGLE feature overrides para evitar artefactos de renderizado
               setenv("ANGLE_FEATURE_OVERRIDES_DISABLED", "hasCheapRenderPass", 1);
               setenv("ANGLE_FEATURE_OVERRIDES_ENABLED", "flushAfterStreamVertexData:forceRobustResourceInit:allowClearForRobustResourceInit:preferDrawClearOverVkCmdClearAttachments", 1);
               setenv("MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS", "1", 1);
@@ -626,7 +576,6 @@ jobs:
               snprintf(resources_path, sizeof(resources_path), "%s/Resources/mcpelauncher", bundle_path);
               setenv("MCPELAUNCHER_RESOURCES", resources_path, 1);
               
-              // NUEVO: Configurar VK_DRIVER_FILES para MoltenVK
               char vk_driver_path[MAXPATHLEN];
               snprintf(vk_driver_path, sizeof(vk_driver_path), "%s/Frameworks/mvk-angle/MoltenVK_icd.json", bundle_path);
               setenv("VK_DRIVER_FILES", vk_driver_path, 1);
@@ -658,35 +607,10 @@ jobs:
           }
           EOF
           
-          # 9. Compilar el launcher en C
           clang -arch x86_64 -mmacosx-version-min=10.15 -O2 -o dist/Trinity.app/Contents/MacOS/trinity trinity_launcher.c
-          
-          # 10. Actualizar Info.plist para que apunte al launcher
           /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable trinity" dist/Trinity.app/Contents/Info.plist
-          
-          # 11. Copiar icono
           cp trinity/resources/branding/com.trench.trinity.launcher.icns dist/Trinity.app/Contents/Resources/AppIcon.icns
           
-          # 12. Verificar configuración de ANGLE
-          echo "=== Verificando estructura del bundle ==="
-          ls -la dist/Trinity.app/Contents/Frameworks/mvk-angle/
-          
-          echo -e "\n=== Verificando MoltenVK_icd.json ==="
-          cat dist/Trinity.app/Contents/Frameworks/mvk-angle/MoltenVK_icd.json
-          
-          echo -e "\n=== Verificando símbolos en libGLESv2.dylib ==="
-          nm -gU dist/Trinity.app/Contents/Frameworks/mvk-angle/libGLESv2.dylib | grep -E "glBindRenderbuffer|eglGetDisplay" || echo "ADVERTENCIA: Símbolos GL ES no encontrados"
-          
-          echo -e "\n=== Verificando dependencias de libEGL.dylib ==="
-          otool -L dist/Trinity.app/Contents/Frameworks/mvk-angle/libEGL.dylib
-          
-          echo -e "\n=== Verificando dependencias de libGLESv2.dylib ==="
-          otool -L dist/Trinity.app/Contents/Frameworks/mvk-angle/libGLESv2.dylib
-          
-          echo -e "\n=== Verificando dependencias de libMoltenVK.dylib ==="
-          otool -L dist/Trinity.app/Contents/Frameworks/mvk-angle/libMoltenVK.dylib
-          
-          # 13. Limpiar atributos extendidos y firmar
           xattr -cr dist/Trinity.app
           cd dist
           codesign --force --deep --sign - --timestamp=none Trinity.app
@@ -705,3 +629,26 @@ jobs:
         run: |
           pip3 install huggingface_hub --break-system-packages
           hf upload ccoffee20/macos dist/Trinity-x86_64.dmg --repo-type dataset --token $HF_TOKEN
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [build-arm64, build-x86_64]
+    if: ${{ always() && (needs.build-arm64.result == 'success' || needs.build-x86_64.result == 'success') }}
+    permissions:
+      contents: write
+    steps:
+      - name: Descargar artefactos
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Trinity-macOS-*
+          merge-multiple: true
+
+      - name: Crear Release en GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-macos
+          name: "Trinity Launcher macOS"
+          files: |
+            *.dmg
+          draft: false
+          prerelease: false
